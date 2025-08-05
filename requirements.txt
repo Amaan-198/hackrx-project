@@ -1,0 +1,11 @@
+streamlit
+spacy
+langchain
+langchain-community
+PyPDF2
+pandas
+numpy
+plotly
+faiss-cpu
+sentence-transformers
+ollama
