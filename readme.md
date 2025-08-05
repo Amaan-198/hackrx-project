@@ -21,15 +21,9 @@ This project was built for the HackRx 6.0 Hackathon by Bajaj Finserv Health, com
 ```
 decision-co-pilot/
 ├── app.py                  # Streamlit application entry point
-├── query_parser.py         # Extracts structured data (age, condition, duration, etc.) from queries
-├── rule_engine.py          # Validates claims against policy rules (waiting periods, exclusions)
-├── confidence_calc.py      # Calculates a comprehensive confidence score
-├── utils.py                # Shared helper functions
 ├── requirements.txt        # Python package dependencies
 ├── README.md               # This detailed project documentation
-├── .gitignore              # Files and folders to ignore for Git
-└── data/
-    └── sample_policy.pdf   # Optional: sample SBI policy for demos
+
 ```
 
 ## 🔧 Key Features
