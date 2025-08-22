@@ -109,6 +109,7 @@ class QueryParser:
             if match:
                 try:
                     parsed["age"] = int(match.group(1))
+                    parsed["completeness_score"] += 0.25
                 except (ValueError, TypeError):
                     pass
                 break
@@ -141,6 +142,7 @@ class QueryParser:
                 found_conditions.append(keyword)
         
         if found_conditions:
+            found_conditions.sort()
             parsed["condition"] = ", ".join(found_conditions)
             parsed["treatment_type"] = found_conditions[0]
             parsed["completeness_score"] += 0.25
@@ -272,22 +274,28 @@ class InsuranceRuleEngine:
         
         # Extract exclusions
         exclusion_patterns = [
-            r"exclusions?:?\s*([^.]+)",
-            r"not[-\s]?covered:?\s*([^.]+)",
-            r"excluded[-\s]?treatments?:?\s*([^.]+)",
-            r"conditions?\s*not\s*covered:?\s*([^.]+)"
+            r"exclusions?:\s*\n((?:\s*•[^\n]+\n)+)",
+            r"not[-\s]?covered:\s*\n((?:\s*•[^\n]+\n)+)",
+            r"excluded[-\s]?treatments?:\s*\n((?:\s*•[^\n]+\n)+)",
+            r"conditions?\s*not\s*covered:\s*\n((?:\s*•[^\n]+\n)+)"
         ]
         
         exclusions = []
         for pattern in exclusion_patterns:
-            matches = re.findall(pattern, policy_lower, re.MULTILINE | re.DOTALL)
+            matches = re.findall(pattern, policy_lower, re.MULTILINE)
             for match in matches:
                 # Clean and split exclusions
-                items = [item.strip() for item in re.split(r'[,\n•]', match) if item.strip()]
+                items = [item.strip().lstrip('•').strip() for item in match.strip().split('\n') if item.strip()]
                 exclusions.extend(items)
-        
+
+        # Post-processing to remove noise
         if exclusions:
-            rules["exclusions"] = exclusions
+            processed_exclusions = []
+            for ex in exclusions:
+                # Remove short, meaningless exclusions
+                if len(ex.split()) >= 2 and len(ex) > 15:
+                    processed_exclusions.append(ex)
+            rules["exclusions"] = processed_exclusions
         
         self.extracted_rules = rules
         return rules
@@ -600,6 +608,12 @@ def create_enhanced_prompt_template() -> Tuple[PromptTemplate, StructuredOutputP
     
     prompt_text = '''You are an expert insurance claims analyst AI with deep knowledge of insurance policies and regulations.
 
+HALLUCINATION PREVENTION:
+- You MUST NOT invent or infer policy clauses.
+- If the policy does not explicitly cover a condition, you MUST state that coverage is not found.
+- DO NOT associate a condition with a seemingly related but incorrect policy clause (e.g., do not associate 'knee surgery' with 'genitourinary surgery').
+- If you are unsure, your decision MUST be REQUIRES_CLARIFICATION.
+
 CRITICAL ANALYSIS FRAMEWORK:
 1. Analyze the claim against EXPLICIT policy benefits only
 2. Check for rule violations (waiting periods, exclusions, age limits)
@@ -613,9 +627,9 @@ CLAIM QUERY:
 {question}
 
 DECISION CRITERIA:
-- APPROVED: Specific treatment/service explicitly covered AND no rule violations
+- APPROVED: Specific treatment/service explicitly covered AND no rule violations. The covered service MUST be directly related to the patient's condition.
 - REJECTED: Treatment not covered OR rule violations present  
-- REQUIRES_CLARIFICATION: Insufficient information to make definitive decision
+- REQUIRES_CLARIFICATION: Insufficient information to make definitive decision, or ambiguity in the policy.
 
 SOURCE CITATION REQUIREMENTS:
 - Every justification MUST include page number reference
@@ -626,14 +640,14 @@ SOURCE CITATION REQUIREMENTS:
 REASONING PROCESS:
 1. Parse claim details (age, condition, policy duration, etc.)
 2. Check rule violations (waiting periods, exclusions, age limits)
-3. Search for relevant policy coverage
-4. Match claim to specific policy benefits
-5. Determine coverage amount based on policy terms
-6. Provide final decision with confidence assessment
+3. Search for relevant policy coverage for the EXACT condition mentioned in the query.
+4. Match claim to specific policy benefits.
+5. Determine coverage amount based on policy terms.
+6. Provide final decision with confidence assessment.
 
 RESPONSE REQUIREMENTS:
-- Use ONLY information from provided context
-- Include page numbers for ALL supporting evidence
+- Use ONLY information from provided context.
+- Include page numbers for ALL supporting evidence.
 - Provide detailed step-by-step reasoning
 - List any rule violations found
 - Return valid JSON without comments
