@@ -7,11 +7,11 @@ import spacy
 from typing import Dict, Any, Optional, List, Tuple
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 from langchain.output_parsers import ResponseSchema, StructuredOutputParser
 from langchain_core.documents import Document
 import pandas as pd
@@ -665,7 +665,7 @@ CRITICAL: Every justification must cite specific page numbers. Never approve wit
 # --- Enhanced QA Chain with Source Tracking ---
 def create_enhanced_qa_chain(vs: FAISS, page_mapping: Dict):
     """Create QA chain with enhanced source tracking"""
-    llm = Ollama(model=MODEL_NAME, temperature=0.1)
+    llm = OllamaLLM(model=MODEL_NAME, temperature=0.1)
     prompt, parser = create_enhanced_prompt_template()
     
     chain = RetrievalQA.from_chain_type(

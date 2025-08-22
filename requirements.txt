@@ -9,3 +9,5 @@ plotly
 faiss-cpu
 sentence-transformers
 ollama
+langchain-huggingface
+langchain-ollama
