@@ -13,7 +13,7 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 from langchain_community.llms import Ollama
 from langchain.output_parsers import ResponseSchema, StructuredOutputParser
-from langchain.schema import Document
+from langchain_core.documents import Document
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -693,7 +693,7 @@ def process_enhanced_response(response: str, parser, rule_validation: Dict) -> T
                         error_msg = f"JSON parsing failed: {str(e)}. Raw response: {cleaned_response[:500]}..."
                         raise ValueError(error_msg)
                 else:
-                    raise ValueError("No JSON structure found in response")#
+                    raise ValueError("No JSON structure found in response")
         
         # Integrate rule validation results
         if rule_validation.get("violations"):
@@ -859,7 +859,7 @@ def create_analytics_dashboard():
             "timestamp": pd.to_datetime(log.get("timestamp", datetime.now())),
             "decision": log.get("decision", "Unknown"),
             "confidence": log.get("final_confidence", log.get("confidence", 0)),
-            "amount": str(log.get("amount", 0)),
+            "amount": log.get("amount", 0),
             "has_violations": len(log.get("rule_violations", [])) > 0,
             "completeness": log.get("parsed_query", {}).get("completeness_score", 0),
             "parse_method": log.get("parse_method", "unknown")
@@ -1007,11 +1007,7 @@ def display_reasoning_path(response: Dict):
                 completeness = parsed_query.get("completeness_score", 0)
                 st.metric("Query Completeness", f"{completeness:.1%}")
                 
-                missing_fields = []
-                if not parsed_query.get("age"): missing_fields.append("age")
-                if not parsed_query.get("gender"): missing_fields.append("gender")
-                if not parsed_query.get("condition"): missing_fields.append("condition")
-                if not parsed_query.get("policy_duration"): missing_fields.append("policy duration")
+                missing_fields = st.session_state.query_parser.get_missing_fields(parsed_query)
                 
                 if missing_fields:
                     st.warning(f"Missing: {', '.join(missing_fields)}")
@@ -1093,6 +1089,57 @@ def display_json_output(response: Dict):
     
     # Display in a formatted box
     st.markdown(f"```json\n{json.dumps(json_output, indent=2, ensure_ascii=False)}\n```")
+
+def render_chat_message(message: Dict):
+    """Render a single chat message."""
+    with st.chat_message(message["role"]):
+        if message["role"] == "assistant":
+            response = message["content"]
+            if isinstance(response, dict) and "error" not in response:
+                # Display main decision
+                decision = response.get("decision", "Unknown")
+                confidence = response.get("final_confidence", response.get("confidence", 0))
+
+                # Decision display with color coding
+                if decision == "APPROVED":
+                    st.success(f"✅ **APPROVED** (Confidence: {confidence:.1%})")
+                elif decision == "REJECTED":
+                    st.error(f"❌ **REJECTED** (Confidence: {confidence:.1%})")
+                else:
+                    st.warning(f"⚠️ **{decision}** (Confidence: {confidence:.1%})")
+
+                # Amount and justification
+                amount = response.get("amount", 0)
+                if amount and amount != 0:
+                    if isinstance(amount, (int, float)) and amount > 0:
+                        st.info(f"💰 **Amount:** ₹{amount:,}")
+                    else:
+                        st.info(f"💰 **Amount:** {amount}")
+
+                justification = response.get("justification", "")
+                if justification:
+                    st.markdown(f"**Justification:** {justification}")
+
+                # Show rule violations if any
+                violations = response.get("rule_violations", [])
+                if violations:
+                    st.error("**Rule Violations:**")
+                    for violation in violations:
+                        st.write(f"• {violation}")
+
+                # Display reasoning path
+                display_reasoning_path(response)
+
+                # Display JSON output
+                display_json_output(response)
+
+            else:
+                st.error("Error processing query")
+                if "raw_response" in response:
+                    with st.expander("Raw Response"):
+                        st.code(response["raw_response"])
+        else:
+            st.markdown(message["content"])
 
 # --- Main Streamlit Application ---
 def main():
@@ -1185,54 +1232,7 @@ def main():
             
             # Display chat history
             for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    if message["role"] == "assistant":
-                        response = message["content"]
-                        if isinstance(response, dict) and "error" not in response:
-                            # Display main decision
-                            decision = response.get("decision", "Unknown")
-                            confidence = response.get("final_confidence", response.get("confidence", 0))
-                            
-                            # Decision display with color coding
-                            if decision == "APPROVED":
-                                st.success(f"✅ **APPROVED** (Confidence: {confidence:.1%})")
-                            elif decision == "REJECTED":
-                                st.error(f"❌ **REJECTED** (Confidence: {confidence:.1%})")
-                            else:
-                                st.warning(f"⚠️ **{decision}** (Confidence: {confidence:.1%})")
-                            
-                            # Amount and justification
-                            amount = response.get("amount", 0)
-                            if amount and amount != 0:
-                                if isinstance(amount, (int, float)) and amount > 0:
-                                    st.info(f"💰 **Amount:** ₹{amount:,}")
-                                else:
-                                    st.info(f"💰 **Amount:** {amount}")
-                            
-                            justification = response.get("justification", "")
-                            if justification:
-                                st.markdown(f"**Justification:** {justification}")
-                            
-                            # Show rule violations if any
-                            violations = response.get("rule_violations", [])
-                            if violations:
-                                st.error("**Rule Violations:**")
-                                for violation in violations:
-                                    st.write(f"• {violation}")
-                            
-                            # Display reasoning path
-                            display_reasoning_path(response)
-                            
-                            # Display JSON output
-                            display_json_output(response)
-                            
-                        else:
-                            st.error("Error processing query")
-                            if "raw_response" in response:
-                                with st.expander("Raw Response"):
-                                    st.code(response["raw_response"])
-                    else:
-                        st.markdown(message["content"])
+                render_chat_message(message)
             
             # Query input
             query = st.chat_input("Enter your insurance claim query (e.g., '46-year-old male, knee surgery in Pune, 3-month-old policy')...")
@@ -1344,7 +1344,7 @@ Maternity delivery claim, policy purchased 10 months ago""",
                                 
                             except Exception as e:
                                 batch_results.append({
-                                    "query": query if 'query' in locals() else "Unknown Query",
+                                    "query": query,
                                     "error": str(e),
                                     "decision": "ERROR",
                                     "confidence": 0.0
