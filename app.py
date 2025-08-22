@@ -37,18 +37,39 @@ st.set_page_config(
 # Custom CSS for better UI
 st.markdown("""
 <style>
+    :root {
+        --primary-color: #007bff;
+        --secondary-color: #6c757d;
+        --success-color: #28a745;
+        --danger-color: #dc3545;
+        --warning-color: #ffc107;
+        --info-color: #17a2b8;
+        --light-color: #f8f9fa;
+        --dark-color: #343a40;
+    }
     .main-header {
         padding: 1rem 0;
-        border-bottom: 2px solid #f0f2f6;
+        border-bottom: 2px solid var(--light-color);
         margin-bottom: 2rem;
     }
-    .confidence-high { background-color: #d4edda; padding: 0.5rem; border-radius: 0.5rem; }
-    .confidence-medium { background-color: #fff3cd; padding: 0.5rem; border-radius: 0.5rem; }
-    .confidence-low { background-color: #f8d7da; padding: 0.5rem; border-radius: 0.5rem; }
-    .reasoning-box { background-color: #f8f9fa; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #007bff; }
+    .confidence-high { background-color: #d4edda; color: #155724; padding: 0.5rem; border-radius: 0.5rem; }
+    .confidence-medium { background-color: #fff3cd; color: #856404; padding: 0.5rem; border-radius: 0.5rem; }
+    .confidence-low { background-color: #f8d7da; color: #721c24; padding: 0.5rem; border-radius: 0.5rem; }
+    .reasoning-box { background-color: var(--light-color); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--primary-color); }
     .stSpinner > div { text-align: center; }
-    .stDownloadButton>button { width: 100%; }
-    .json-box { background-color: #f8f9fa; padding: 1rem; border-radius: 0.5rem; font-family: monospace; }
+    .stDownloadButton>button {
+        width: 100%;
+        background-color: var(--primary-color);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.5rem;
+        cursor: pointer;
+    }
+    .stDownloadButton>button:hover {
+        background-color: #0056b3;
+    }
+    .json-box { background-color: var(--light-color); padding: 1rem; border-radius: 0.5rem; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -884,122 +905,130 @@ def create_analytics_dashboard():
     # Add numeric amount column for calculations
     df['amount_numeric'] = pd.to_numeric(df['amount'], errors='coerce')
     
-    # Key Metrics Row
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_queries = len(df)
-        st.metric("Total Queries", total_queries)
-    
-    with col2:
-        approval_rate = (df["decision"] == "APPROVED").mean() * 100 if total_queries > 0 else 0
-        st.metric("Approval Rate", f"{approval_rate:.1f}%")
-    
-    with col3:
-        avg_confidence = df["confidence"].mean() if total_queries > 0 else 0
-        st.metric("Avg Confidence", f"{avg_confidence:.2f}")
-    
-    with col4:
-        # Use numeric amount for approved claims
-        approved_numeric = df[(df["decision"] == "APPROVED") & (df['amount_numeric'].notna())]['amount_numeric']
-        if not approved_numeric.empty:
-            avg_amount = approved_numeric.mean()
-            st.metric("Avg Claim Amount", f"₹{avg_amount:,.0f}")
-        else:
-            st.metric("Avg Claim Amount", "N/A")
-    
-    # Charts Row
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Decision Distribution
-        decision_counts = df["decision"].value_counts()
-        fig_decisions = px.pie(
-            values=decision_counts.values,
-            names=decision_counts.index,
-            title="Decision Distribution"
-        )
-        st.plotly_chart(fig_decisions, use_container_width=True)
-    
-    with col2:
-        # Confidence Distribution
-        fig_confidence = px.histogram(
-            df, x="confidence", nbins=10,
-            title="Confidence Score Distribution",
-            labels={"confidence": "Confidence Score", "count": "Number of Queries"}
-        )
-        st.plotly_chart(fig_confidence, use_container_width=True)
-    
-    # Time Series Analysis
-    if total_queries > 1:
-        st.subheader("📈 Trends Over Time")
-        
-        # Resample by hour if we have enough data points
-        df_time = df.set_index('timestamp').resample('H').agg({
-            'decision': 'count',
-            'confidence': 'mean'
-        }).reset_index()
-        
-        fig_timeline = go.Figure()
-        fig_timeline.add_trace(go.Scatter(
-            x=df_time['timestamp'], 
-            y=df_time['decision'],
-            mode='lines+markers',
-            name='Queries per Hour',
-            yaxis='y'
-        ))
-        fig_timeline.add_trace(go.Scatter(
-            x=df_time['timestamp'], 
-            y=df_time['confidence'],
-            mode='lines+markers',
-            name='Avg Confidence',
-            yaxis='y2'
-        ))
-        
-        fig_timeline.update_layout(
-            title='Query Volume and Confidence Trends',
-            xaxis_title='Time',
-            yaxis=dict(title='Query Count', side='left'),
-            yaxis2=dict(title='Confidence Score', side='right', overlaying='y'),
-            hovermode='x unified'
-        )
-        st.plotly_chart(fig_timeline, use_container_width=True)
-    
-    # Detailed Analysis
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🔍 Query Completeness Analysis")
-        completeness_bins = pd.cut(df["completeness"], bins=[0, 0.3, 0.6, 1.0], labels=["Low", "Medium", "High"])
-        completeness_counts = completeness_bins.value_counts()
-        
-        fig_completeness = px.bar(
-            x=completeness_counts.index,
-            y=completeness_counts.values,
-            title="Query Completeness Distribution",
-            labels={"x": "Completeness Level", "y": "Count"}
-        )
-        st.plotly_chart(fig_completeness, use_container_width=True)
-    
-    with col2:
-        st.subheader("⚠️ Rule Violations Analysis")
-        violation_rate = df["has_violations"].mean() * 100
-        st.metric("Queries with Rule Violations", f"{violation_rate:.1f}%")
-        
-        if violation_rate > 0:
-            violation_impact = df[df["has_violations"]]["decision"].value_counts()
-            fig_violations = px.bar(
-                x=violation_impact.index,
-                y=violation_impact.values,
-                title="Impact of Rule Violations on Decisions"
+    # Create sub-tabs
+    overview_tab, time_series_tab, detailed_analysis_tab = st.tabs(["📈 Overview", "📉 Time Series", "🔍 Detailed Analysis"])
+
+    with overview_tab:
+        # Key Metrics Row
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            total_queries = len(df)
+            st.metric("Total Queries", total_queries)
+
+        with col2:
+            approval_rate = (df["decision"] == "APPROVED").mean() * 100 if total_queries > 0 else 0
+            st.metric("Approval Rate", f"{approval_rate:.1f}%")
+
+        with col3:
+            avg_confidence = df["confidence"].mean() if total_queries > 0 else 0
+            st.metric("Avg Confidence", f"{avg_confidence:.2f}")
+
+        with col4:
+            # Use numeric amount for approved claims
+            approved_numeric = df[(df["decision"] == "APPROVED") & (df['amount_numeric'].notna())]['amount_numeric']
+            if not approved_numeric.empty:
+                avg_amount = approved_numeric.mean()
+                st.metric("Avg Claim Amount", f"₹{avg_amount:,.0f}")
+            else:
+                st.metric("Avg Claim Amount", "N/A")
+
+        # Charts Row
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Decision Distribution
+            decision_counts = df["decision"].value_counts()
+            fig_decisions = px.pie(
+                values=decision_counts.values,
+                names=decision_counts.index,
+                title="Decision Distribution"
             )
-            st.plotly_chart(fig_violations, use_container_width=True)
-    
-    # Recent Queries Table
-    st.subheader("📋 Recent Query Analysis")
-    recent_df = df.tail(10)[["timestamp", "decision", "confidence", "amount", "has_violations"]].copy()
-    recent_df["timestamp"] = recent_df["timestamp"].dt.strftime("%H:%M:%S")
-    st.dataframe(recent_df, use_container_width=True)
+            st.plotly_chart(fig_decisions, use_container_width=True)
+
+        with col2:
+            # Confidence Distribution
+            fig_confidence = px.histogram(
+                df, x="confidence", nbins=10,
+                title="Confidence Score Distribution",
+                labels={"confidence": "Confidence Score", "count": "Number of Queries"}
+            )
+            st.plotly_chart(fig_confidence, use_container_width=True)
+
+    with time_series_tab:
+        # Time Series Analysis
+        if len(df) > 1:
+            st.subheader("📈 Trends Over Time")
+
+            # Resample by hour if we have enough data points
+            df_time = df.set_index('timestamp').resample('h').agg({
+                'decision': 'count',
+                'confidence': 'mean'
+            }).reset_index()
+
+            fig_timeline = go.Figure()
+            fig_timeline.add_trace(go.Scatter(
+                x=df_time['timestamp'],
+                y=df_time['decision'],
+                mode='lines+markers',
+                name='Queries per Hour',
+                yaxis='y'
+            ))
+            fig_timeline.add_trace(go.Scatter(
+                x=df_time['timestamp'],
+                y=df_time['confidence'],
+                mode='lines+markers',
+                name='Avg Confidence',
+                yaxis='y2'
+            ))
+
+            fig_timeline.update_layout(
+                title='Query Volume and Confidence Trends',
+                xaxis_title='Time',
+                yaxis=dict(title='Query Count', side='left'),
+                yaxis2=dict(title='Confidence Score', side='right', overlaying='y'),
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_timeline, use_container_width=True)
+        else:
+            st.info("Not enough data for time series analysis.")
+
+    with detailed_analysis_tab:
+        # Detailed Analysis
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("🔍 Query Completeness Analysis")
+            completeness_bins = pd.cut(df["completeness"], bins=[0, 0.3, 0.6, 1.0], labels=["Low", "Medium", "High"])
+            completeness_counts = completeness_bins.value_counts()
+
+            fig_completeness = px.bar(
+                x=completeness_counts.index,
+                y=completeness_counts.values,
+                title="Query Completeness Distribution",
+                labels={"x": "Completeness Level", "y": "Count"}
+            )
+            st.plotly_chart(fig_completeness, use_container_width=True)
+
+        with col2:
+            st.subheader("⚠️ Rule Violations Analysis")
+            violation_rate = df["has_violations"].mean() * 100
+            st.metric("Queries with Rule Violations", f"{violation_rate:.1f}%")
+
+            if violation_rate > 0:
+                violation_impact = df[df["has_violations"]]["decision"].value_counts()
+                fig_violations = px.bar(
+                    x=violation_impact.index,
+                    y=violation_impact.values,
+                    title="Impact of Rule Violations on Decisions"
+                )
+                st.plotly_chart(fig_violations, use_container_width=True)
+
+        # Recent Queries Table
+        st.subheader("📋 Recent Query Analysis")
+        recent_df = df.tail(10)[["timestamp", "decision", "confidence", "amount", "has_violations"]].copy()
+        recent_df["timestamp"] = recent_df["timestamp"].dt.strftime("%H:%M:%S")
+        st.dataframe(recent_df, use_container_width=True)
 
 # --- Reasoning Path Display ---
 def display_reasoning_path(response: Dict):
@@ -1115,12 +1144,23 @@ def render_chat_message(message: Dict):
                 confidence = response.get("final_confidence", response.get("confidence", 0))
 
                 # Decision display with color coding
-                if decision == "APPROVED":
-                    st.success(f"✅ **APPROVED** (Confidence: {confidence:.1%})")
-                elif decision == "REJECTED":
-                    st.error(f"❌ **REJECTED** (Confidence: {confidence:.1%})")
-                else:
-                    st.warning(f"⚠️ **{decision}** (Confidence: {confidence:.1%})")
+                col1, col2 = st.columns([0.9, 0.1])
+                with col1:
+                    if decision == "APPROVED":
+                        st.success(f"✅ **APPROVED** (Confidence: {confidence:.1%})")
+                    elif decision == "REJECTED":
+                        st.error(f"❌ **REJECTED** (Confidence: {confidence:.1%})")
+                    else:
+                        st.warning(f"⚠️ **{decision}** (Confidence: {confidence:.1%})")
+                with col2:
+                    confidence_breakdown = response.get("confidence_breakdown", {})
+                    tooltip_text = ""
+                    if confidence_breakdown:
+                        tooltip_text = "Confidence Score Breakdown:\n"
+                        for factor, score in confidence_breakdown.items():
+                            if isinstance(score, (int, float)):
+                                tooltip_text += f"- {factor.replace('_', ' ').title()}: {score:.2f}\n"
+                    st.button("ℹ️", help=tooltip_text, key=f"info_button_{response.get('timestamp', '')}")
 
                 # Amount and justification
                 amount = response.get("amount", 0)
@@ -1209,17 +1249,17 @@ def main():
             # Show extracted rules in sidebar
             if extracted_rules:
                 st.sidebar.success(f"✅ Extracted {len(extracted_rules)} policy-specific rules")
-                with st.sidebar.expander("📋 Policy Rules Detected"):
+                with st.sidebar.expander("📋 Policy Rules Detected", expanded=True):
                     for category, rules in extracted_rules.items():
-                        st.write(f"**{category.replace('_', ' ').title()}:**")
-                        if isinstance(rules, dict):
-                            for key, value in rules.items():
-                                st.write(f"  • {key}: {value}")
-                        elif isinstance(rules, list):
-                            for rule in rules:
-                                st.write(f"  • {rule}")
-                        else:
-                            st.write(f"  • {rules}")
+                        with st.expander(f"**{category.replace('_', ' ').title()}**"):
+                            if isinstance(rules, dict):
+                                for key, value in rules.items():
+                                    st.write(f"  • **{key.replace('_', ' ').title()}:** {value}")
+                            elif isinstance(rules, list):
+                                for rule in rules:
+                                    st.write(f"  • {rule}")
+                            else:
+                                st.write(f"  • {rules}")
             else:
                 st.sidebar.warning("⚠️ Using default rules - no policy-specific rules found")
         
@@ -1244,9 +1284,13 @@ def main():
             if "messages" not in st.session_state:
                 st.session_state.messages = []
             
-            # Display chat history
-            for message in st.session_state.messages:
-                render_chat_message(message)
+            # Create a container for the chat history
+            chat_container = st.container()
+
+            # Display chat history in the container
+            with chat_container:
+                for message in st.session_state.messages:
+                    render_chat_message(message)
             
             # Query input
             query = st.chat_input("Enter your insurance claim query (e.g., '46-year-old male, knee surgery in Pune, 3-month-old policy')...")
@@ -1334,6 +1378,8 @@ Maternity delivery claim, policy purchased 10 months ago""",
                 if batch_input:
                     query_count = len([q.strip() for q in batch_input.split('\n') if q.strip()])
                     st.info(f"Ready to process {query_count} queries")
+                    if query_count > 10:
+                        st.warning("Processing a large number of queries may take a long time.")
             
             if process_batch and batch_input:
                 queries = [q.strip() for q in batch_input.split('\n') if q.strip()]
@@ -1396,7 +1442,8 @@ Maternity delivery claim, policy purchased 10 months ago""",
                                 "Amount": str(r.get("amount", 0)),
                                 "Confidence": f"{r.get('final_confidence', r.get('confidence', 0)):.2%}",
                                 "Rule Violations": len(r.get("rule_violations", [])),
-                                "Source Pages": ", ".join(map(str, r.get("source_pages", []))) if r.get("source_pages") else "None"
+                                "Source Pages": ", ".join(map(str, r.get("source_pages", []))) if r.get("source_pages") else "None",
+                                "Error": r.get("error", "")
                             }
                             for r in batch_results
                         ])
