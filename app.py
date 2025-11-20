@@ -5,15 +5,22 @@ import json
 import re
 import spacy
 from typing import Dict, Any, Optional, List, Tuple
+
+# Fix HuggingFace environment issues
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["HF_HUB_OFFLINE"] = "0"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+from langchain_core.prompts import PromptTemplate
+from langchain_classic.chains import RetrievalQA
 from langchain_community.llms import Ollama
-from langchain.output_parsers import ResponseSchema, StructuredOutputParser
-from langchain.schema import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_classic.output_parsers import ResponseSchema, StructuredOutputParser
+from langchain_core.documents import Document
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -527,6 +534,62 @@ class ConfidenceCalculator:
         
         return " | ".join(explanations)
 
+# --- Model Initialization Helper ---
+@st.cache_resource
+def initialize_embedding_model():
+    """Initialize and cache the embedding model"""
+    try:
+        import os
+        # Force online mode
+        os.environ["HF_HUB_OFFLINE"] = "0"
+        
+        embeddings = HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True},
+            cache_folder=os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+        )
+        return embeddings, None
+    except Exception as e:
+        error_msg = str(e)
+        
+        troubleshooting = """
+**🔧 Troubleshooting Steps:**
+
+1. **Test Internet Connection:**
+   ```
+   curl -I https://huggingface.co
+   ```
+
+2. **Check Proxy Settings (if behind corporate firewall):**
+   ```
+   set HTTP_PROXY=http://your-proxy:port
+   set HTTPS_PROXY=http://your-proxy:port
+   ```
+
+3. **Manual Model Download:**
+   Open a command prompt and run:
+   ```
+   cd d:\\projects\\hackrx-project
+   .\\env\\Scripts\\activate
+   python -c "import os; os.environ['HF_HUB_OFFLINE']='0'; from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+   ```
+
+4. **Offline Mode (if model already downloaded):**
+   Set environment variable before running:
+   ```
+   set HF_HUB_OFFLINE=1
+   ```
+
+5. **Use Alternative Model Path:**
+   If you have the model files locally, update EMBEDDING_MODEL in app.py to point to local path
+"""
+        
+        if "couldn't connect" in error_msg.lower() or "connection" in error_msg.lower():
+            return None, f"❌ **Cannot connect to HuggingFace servers**\n\n{error_msg}\n\n{troubleshooting}"
+        else:
+            return None, f"❌ **Error loading embedding model**\n\n{error_msg}\n\n{troubleshooting}"
+
 # --- Enhanced Document Processing with Source Citations ---
 @st.cache_resource
 def create_enhanced_vector_store(file_path: str) -> Tuple[FAISS, Dict, Dict]:
@@ -568,7 +631,13 @@ def create_enhanced_vector_store(file_path: str) -> Tuple[FAISS, Dict, Dict]:
     status_text.text("Creating embeddings...")
     progress_bar.progress(75)
     
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    # Use pre-initialized embedding model
+    embeddings, error = initialize_embedding_model()
+    if error:
+        st.error(error)
+        st.info("💡 **Troubleshooting Steps:**\n1. Ensure you have stable internet connection\n2. Check firewall/proxy settings\n3. Try running: `pip install --upgrade sentence-transformers`\n4. The model downloads to: `~/.cache/huggingface/`")
+        raise Exception(error)
+    
     vs = FAISS.from_documents(chunks, embeddings)
     
     # Extract policy-specific rules
@@ -1100,6 +1169,28 @@ def main():
     st.title("📄 Decision Co-Pilot: AI-Powered Insurance Claims Assistant")
     st.markdown("*Enhanced with Smart Query Processing, Rule Validation & Source Citations*")
     st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Pre-initialize embedding model to check connectivity
+    if "embedding_check_done" not in st.session_state:
+        with st.spinner("🔄 Initializing embedding model (first time may take a moment)..."):
+            embeddings, error = initialize_embedding_model()
+            if error:
+                st.error(error)
+                st.warning("⚠️ **Cannot proceed without embedding model.**")
+                st.info("""
+                **Possible Solutions:**
+                1. **Check Internet Connection:** The model needs to download from HuggingFace on first use
+                2. **Check Firewall/Proxy:** Ensure access to `huggingface.co`
+                3. **Manual Download:** Run this command in your terminal:
+                   ```
+                   python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+                   ```
+                4. **Alternative:** If offline, consider using a different embedding method
+                """)
+                st.stop()
+            else:
+                st.session_state.embedding_check_done = True
+                st.success("✅ Embedding model loaded successfully!")
     
     # Initialize components
     if "query_parser" not in st.session_state:

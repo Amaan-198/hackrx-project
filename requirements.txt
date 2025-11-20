@@ -1,11 +1,13 @@
 streamlit
 spacy
-langchain
-langchain-community
-PyPDF2
+langchain>=0.1.0
+langchain-classic>=0.1.0
+langchain-community>=0.1.0
+langchain-core>=0.1.0
+langchain-text-splitters>=0.0.1
+pypdf
 pandas
 numpy
 plotly
 faiss-cpu
 sentence-transformers
-ollama
