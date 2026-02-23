@@ -555,3 +555,125 @@ class TestBatchProcessor:
         ])
         assert results[0]["decision"] == "REJECTED"
         assert results[0]["amount"] == 0
+
+    def test_error_entry_has_all_required_fields(self):
+        """Batch error entries must include all analytics-required fields."""
+        chain = MagicMock()
+        chain.invoke.side_effect = RuntimeError("boom")
+        results = self._processor(chain).process_batch(["any query"])
+        r = results[0]
+        for key in ("decision", "amount", "confidence", "rule_violations",
+                     "parsed_query", "timestamp"):
+            assert key in r, f"Error entry missing key: {key}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. Patch: clean_json_response preserves URLs inside strings
+# ─────────────────────────────────────────────────────────────────────────────
+class TestCleanJsonPreservesURLs:
+    def test_url_inside_string_value_is_preserved(self):
+        raw = '{"justification": "See https://example.com/page for details"}'
+        cleaned = app.clean_json_response(raw)
+        parsed = json.loads(cleaned)
+        assert "https://example.com/page" in parsed["justification"]
+
+    def test_double_slash_inside_string_not_stripped(self):
+        raw = '{"path": "C:\\\\Users//file"}'
+        cleaned = app.clean_json_response(raw)
+        # The // inside the string should remain
+        assert "//" in cleaned
+
+    def test_real_comment_outside_string_still_stripped(self):
+        raw = '{"key": "value"} // this is a real comment\n{"k2": "v2"}'
+        cleaned = app.clean_json_response(raw)
+        assert "// this is" not in cleaned
+        assert '"key": "value"' in cleaned
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. Patch: get_applicable_rules does not mutate defaults
+# ─────────────────────────────────────────────────────────────────────────────
+class TestRuleEngineDeepCopy:
+    def test_defaults_not_mutated_by_extracted_rules(self):
+        engine = app.InsuranceRuleEngine()
+        original_pre_existing = engine.default_rules["waiting_periods"]["pre_existing"]
+
+        # Simulate extracting a different waiting period
+        engine.extracted_rules = {"waiting_periods": {"pre_existing": 36}}
+        rules = engine.get_applicable_rules()
+        assert rules["waiting_periods"]["pre_existing"] == 36
+
+        # Defaults must remain unchanged
+        assert engine.default_rules["waiting_periods"]["pre_existing"] == original_pre_existing
+
+    def test_multiple_calls_do_not_accumulate(self):
+        engine = app.InsuranceRuleEngine()
+        engine.extracted_rules = {"waiting_periods": {"custom_rule": 6}}
+        r1 = engine.get_applicable_rules()
+        assert "custom_rule" in r1["waiting_periods"]
+
+        engine.extracted_rules = {}
+        r2 = engine.get_applicable_rules()
+        assert "custom_rule" not in r2["waiting_periods"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. Patch: QueryParser duration patterns & completeness
+# ─────────────────────────────────────────────────────────────────────────────
+class TestQueryParserDurationPatches:
+    def setup_method(self):
+        self.qp = app.QueryParser()
+
+    def test_policy_purchased_n_months_ago(self):
+        result = self.qp.parse_query("Maternity delivery, policy purchased 10 months ago")
+        assert result["policy_duration"] == 10
+        assert result["policy_duration_unit"] == "month"
+
+    def test_policy_bought_n_years_ago(self):
+        result = self.qp.parse_query("policy bought 2 years ago, cardiac surgery")
+        assert result["policy_duration"] == 2
+        assert result["policy_duration_unit"] == "year"
+
+    def test_policy_n_years_old_without_is(self):
+        """'policy 2 years old' (no 'is') should be parsed."""
+        result = self.qp.parse_query("30-year-old female, policy 2 years old")
+        assert result["policy_duration"] == 2
+        assert result["age"] == 30
+
+    def test_completeness_includes_policy_duration(self):
+        result = self.qp.parse_query("3-month policy")
+        assert result["policy_duration"] == 3
+        assert result["completeness_score"] >= 0.15
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. Patch: confidence clamping
+# ─────────────────────────────────────────────────────────────────────────────
+class TestConfidenceClamping:
+    @staticmethod
+    def _failing_parser():
+        p = MagicMock()
+        p.parse.side_effect = Exception("forced fallback")
+        return p
+
+    def test_confidence_above_1_is_clamped(self):
+        raw = json.dumps({
+            "decision": "APPROVED", "amount": 10000,
+            "justification": "page 1", "confidence": 1.5,
+            "reasoning_steps": [], "source_pages": [1], "rule_violations": [],
+        })
+        result, _ = app.process_enhanced_response(
+            raw, self._failing_parser(), {"violations": [], "confidence_impact": 0.0}
+        )
+        assert result["confidence"] <= 1.0
+
+    def test_confidence_below_0_is_clamped(self):
+        raw = json.dumps({
+            "decision": "REJECTED", "amount": 0,
+            "justification": "page 1", "confidence": -0.5,
+            "reasoning_steps": [], "source_pages": [1], "rule_violations": [],
+        })
+        result, _ = app.process_enhanced_response(
+            raw, self._failing_parser(), {"violations": [], "confidence_impact": 0.0}
+        )
+        assert result["confidence"] >= 0.0

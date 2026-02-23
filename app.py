@@ -26,7 +26,8 @@ import numpy as np
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-from collections import Counter  # used by analytics
+import copy
+import hashlib
 
 # --- Configuration ---
 TEMP_DIR = "temp"
@@ -74,9 +75,10 @@ class QueryParser:
         # Avoid matching "3 years old policy" as patient age
         duration_patterns = [
             r'(\d+)[-\s]?(month|year)s?[-\s]?old\s*policy',
-            r'policy\s*is\s*(\d+)[-\s]?(month|year)s?\s*old',
+            r'policy\s*(?:is\s*)?(\d+)[-\s]?(month|year)s?\s*old',
             r'(\d+)[-\s]?(month|year)s?\s*policy',
-            r'policy\s*for\s*(\d+)[-\s]?(month|year)s?'
+            r'policy\s*for\s*(\d+)[-\s]?(month|year)s?',
+            r'policy\s+(?:purchased|bought|taken|started|active)\s+(\d+)\s*(month|year)s?\s*ago',
         ]
 
 
@@ -87,6 +89,7 @@ class QueryParser:
                 # Extract and REMOVE this match from query
                 parsed["policy_duration"] = int(match.group(1))
                 parsed["policy_duration_unit"] = match.group(2).lower() if match.group(2) else "month"
+                parsed["completeness_score"] += 0.15
                 # Remove matched string to prevent false age detection
                 query_lower = query_lower.replace(match.group(0), "", 1)
                 break
@@ -290,7 +293,7 @@ class InsuranceRuleEngine:
     
     def get_applicable_rules(self) -> Dict:
         """Get rules with policy-specific overriding defaults"""
-        final_rules = self.default_rules.copy()
+        final_rules = copy.deepcopy(self.default_rules)
         
         if self.extracted_rules:
             for category, values in self.extracted_rules.items():
@@ -584,7 +587,7 @@ def initialize_embedding_model():
 
 # --- Enhanced Document Processing with Source Citations ---
 @st.cache_resource
-def create_enhanced_vector_store(file_path: str) -> Tuple[FAISS, Dict, Dict]:
+def create_enhanced_vector_store(file_path: str, file_hash: str = "") -> Tuple[FAISS, Dict, Dict]:
     """Create vector store with page number tracking AND extract policy rules"""
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -795,6 +798,8 @@ def process_enhanced_response(response: str, parser, rule_validation: Dict) -> T
         try:
             if isinstance(parsed.get("confidence"), str):
                 parsed["confidence"] = float(parsed["confidence"])
+            if isinstance(parsed.get("confidence"), (int, float)):
+                parsed["confidence"] = max(0.0, min(1.0, float(parsed["confidence"])))
         except (ValueError, TypeError):
             parsed["confidence"] = 0.5
         
@@ -859,9 +864,36 @@ def process_enhanced_response(response: str, parser, rule_validation: Dict) -> T
         }, "error"
 
 def clean_json_response(response: str) -> str:
-    """Clean JSON response"""
-    response = re.sub(r'//.*?(?=\n|$)', '', response)
+    """Clean JSON response by removing JS-style comments and trailing commas.
+
+    Line comments (//) are only stripped when they appear outside of
+    quoted strings so that URLs (e.g. https://…) inside values are preserved.
+    """
+    # --- Remove line comments (//) only when outside string literals ---
+    lines = response.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        in_string = False
+        escape_next = False
+        cut_index = len(line)
+        for i, c in enumerate(line):
+            if escape_next:
+                escape_next = False
+                continue
+            if c == '\\' and in_string:
+                escape_next = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if not in_string and c == '/' and i + 1 < len(line) and line[i + 1] == '/':
+                cut_index = i
+                break
+        cleaned_lines.append(line[:cut_index])
+    response = '\n'.join(cleaned_lines)
+    # --- Remove block comments (/* ... */) ---
     response = re.sub(r'/\*.*?\*/', '', response, flags=re.DOTALL)
+    # --- Remove trailing commas before } or ] ---
     response = re.sub(r',(\s*[}\]])', r'\1', response)
     return response.strip()
 
@@ -892,7 +924,17 @@ class BatchProcessor:
                     "batch_index": i,
                     "query": query,
                     "error": str(e),
-                    "decision": "ERROR"
+                    "decision": "ERROR",
+                    "amount": 0,
+                    "confidence": 0.0,
+                    "final_confidence": 0.0,
+                    "rule_violations": [],
+                    "source_pages": [],
+                    "reasoning_steps": [],
+                    "justification": "Processing error occurred",
+                    "parsed_query": {"completeness_score": 0},
+                    "rule_validation": {"violations": [], "confidence_impact": 0.0},
+                    "timestamp": datetime.now().isoformat(),
                 })
         
         return results
@@ -1043,7 +1085,7 @@ def create_analytics_dashboard():
     
     with col1:
         st.subheader("🔍 Query Completeness Analysis")
-        completeness_bins = pd.cut(df["completeness"], bins=[0, 0.3, 0.6, 1.0], labels=["Low", "Medium", "High"])
+        completeness_bins = pd.cut(df["completeness"], bins=[0, 0.3, 0.6, 1.0], labels=["Low", "Medium", "High"], include_lowest=True)
         completeness_counts = completeness_bins.value_counts()
         
         fig_completeness = px.bar(
@@ -1084,6 +1126,10 @@ def render_response(response: Dict, compact: bool = False):
 
     decision = response.get("decision", "Unknown")
     confidence = response.get("final_confidence", response.get("confidence", 0))
+    try:
+        confidence = float(confidence) if confidence is not None else 0.0
+    except (ValueError, TypeError):
+        confidence = 0.0
     amount = response.get("amount", 0)
     justification = response.get("justification", "")
     violations = response.get("rule_violations", [])
@@ -1175,6 +1221,10 @@ def main():
         st.session_state.rule_engine = InsuranceRuleEngine()
     if "confidence_calc" not in st.session_state:
         st.session_state.confidence_calc = ConfidenceCalculator()
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "interaction_log" not in st.session_state:
+        st.session_state.interaction_log = []
 
     # --- Sidebar ---
     with st.sidebar:
@@ -1182,27 +1232,33 @@ def main():
         uploaded_file = st.file_uploader("Insurance Policy PDF", type="pdf")
 
         if uploaded_file:
-            os.makedirs(TEMP_DIR, exist_ok=True)
-            file_path = os.path.join(TEMP_DIR, uploaded_file.name)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getvalue())
+            file_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
+            if st.session_state.get("_file_hash") != file_hash:
+                os.makedirs(TEMP_DIR, exist_ok=True)
+                file_path = os.path.join(TEMP_DIR, uploaded_file.name)
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getvalue())
 
-            vector_store, page_mapping, extracted_rules = create_enhanced_vector_store(file_path)
-            qa_chain, output_parser = create_enhanced_qa_chain(vector_store, page_mapping)
+                vector_store, page_mapping, extracted_rules = create_enhanced_vector_store(file_path, file_hash)
+                qa_chain, output_parser = create_enhanced_qa_chain(vector_store, page_mapping)
 
-            st.session_state.qa_chain = qa_chain
-            st.session_state.parser = output_parser
-            st.session_state.page_mapping = page_mapping
-            st.session_state.document_name = uploaded_file.name
-            st.session_state.batch_processor = BatchProcessor(
-                qa_chain, output_parser, st.session_state.query_parser,
-                st.session_state.rule_engine, st.session_state.confidence_calc, page_mapping,
-            )
-            st.session_state.rule_engine.extracted_rules = extracted_rules
+                st.session_state.qa_chain = qa_chain
+                st.session_state.parser = output_parser
+                st.session_state.page_mapping = page_mapping
+                st.session_state.document_name = uploaded_file.name
+                st.session_state.batch_processor = BatchProcessor(
+                    qa_chain, output_parser, st.session_state.query_parser,
+                    st.session_state.rule_engine, st.session_state.confidence_calc, page_mapping,
+                )
+                st.session_state.rule_engine.extracted_rules = extracted_rules
+                st.session_state._file_hash = file_hash
+                # Clear chat history when a new document is loaded
+                st.session_state.messages = []
+                st.session_state.interaction_log = []
 
-            if extracted_rules:
+            if st.session_state.rule_engine.extracted_rules:
                 with st.expander("📋 Detected Policy Rules"):
-                    for category, rules in extracted_rules.items():
+                    for category, rules in st.session_state.rule_engine.extracted_rules.items():
                         st.markdown(f"**{category.replace('_', ' ').title()}**")
                         if isinstance(rules, dict):
                             for k, v in rules.items():
@@ -1246,9 +1302,6 @@ def main():
 
     # --- Tab 1: Chat ---
     with tab_chat:
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
         # Chat input (always visible at top)
         query = st.chat_input("Describe the insurance claim…")
 
@@ -1270,14 +1323,12 @@ def main():
             st.rerun()
 
         # Render messages newest-first (they are already stored in reverse order)
+        _first_assistant = True
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 if msg["role"] == "assistant":
-                    # First assistant message (index 1) gets full details;
-                    # older ones are compact.
-                    is_latest = (st.session_state.messages.index(msg) == 1
-                                 and len(st.session_state.messages) >= 2)
-                    render_response(msg["content"], compact=not is_latest)
+                    render_response(msg["content"], compact=not _first_assistant)
+                    _first_assistant = False
                 else:
                     st.markdown(msg["content"])
 
@@ -1314,6 +1365,10 @@ def main():
                     except Exception as e:
                         batch_results.append({
                             "query": q, "error": str(e), "decision": "ERROR",
+                            "amount": 0, "confidence": 0.0, "final_confidence": 0.0,
+                            "rule_violations": [], "source_pages": [],
+                            "parsed_query": {"completeness_score": 0},
+                            "timestamp": datetime.now().isoformat(),
                         })
                     progress.progress((i + 1) / len(queries))
 
