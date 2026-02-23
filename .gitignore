@@ -5,6 +5,10 @@ __pycache__/
 # Virtual environments
 env/
 venv/
+.venv/
+
+# Secrets
+.env
 
 # Streamlit
 .streamlit/

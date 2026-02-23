@@ -3,13 +3,15 @@ import streamlit as st
 import os
 import json
 import re
-import spacy
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, List, Tuple
 
 # Fix HuggingFace environment issues
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["HF_HUB_OFFLINE"] = "0"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -17,21 +19,18 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_classic.chains import RetrievalQA
-from langchain_community.llms import Ollama
-from langchain_core.output_parsers import StrOutputParser
+from langchain_groq import ChatGroq
 from langchain_classic.output_parsers import ResponseSchema, StructuredOutputParser
-from langchain_core.documents import Document
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-from collections import Counter
-import hashlib
+from collections import Counter  # used by analytics
 
 # --- Configuration ---
 TEMP_DIR = "temp"
-MODEL_NAME = "llama3:8b"
+MODEL_NAME = "llama-3.3-70b-versatile"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 # --- Enhanced UI Configuration ---
@@ -41,32 +40,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better UI
+# Minimal CSS
 st.markdown("""
 <style>
-    .main-header {
-        padding: 1rem 0;
-        border-bottom: 2px solid #f0f2f6;
-        margin-bottom: 2rem;
-    }
-    .confidence-high { background-color: #d4edda; padding: 0.5rem; border-radius: 0.5rem; }
-    .confidence-medium { background-color: #fff3cd; padding: 0.5rem; border-radius: 0.5rem; }
-    .confidence-low { background-color: #f8d7da; padding: 0.5rem; border-radius: 0.5rem; }
-    .reasoning-box { background-color: #f8f9fa; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #007bff; }
     .stSpinner > div { text-align: center; }
     .stDownloadButton>button { width: 100%; }
-    .json-box { background-color: #f8f9fa; padding: 1rem; border-radius: 0.5rem; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- Smart Query Preprocessing ---
 class QueryParser:
     def __init__(self):
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            st.error("⚠️ spaCy model not found. Install with: python -m spacy download en_core_web_sm")
-            self.nlp = None
+        self.nlp = None  # spaCy model not used; all parsing is regex-based
     
     def parse_query(self, query: str) -> Dict[str, Any]:
         """Extract structured information from natural language query"""
@@ -116,15 +101,19 @@ class QueryParser:
             if match:
                 try:
                     parsed["age"] = int(match.group(1))
+                    parsed["completeness_score"] += 0.15
                 except (ValueError, TypeError):
                     pass
                 break
-        # Extract gender
-        if any(word in query_lower for word in ["male", "man", "m", "gentleman"]):
-            parsed["gender"] = "male"
-            parsed["completeness_score"] += 0.15
-        elif any(word in query_lower for word in ["female", "woman", "f", "lady"]):
+        # Extract gender — check female-specific words first to avoid
+        # substring false-positives (e.g. "female" contains "male",
+        # "claim" contains the letter "m").
+        # Use regex word boundaries so we only match whole tokens.
+        if re.search(r'\bfemale\b|\bwoman\b|\blady\b|\bgirl\b', query_lower):
             parsed["gender"] = "female"
+            parsed["completeness_score"] += 0.15
+        elif re.search(r'\bmale\b|\bman\b|\bgentleman\b', query_lower):
+            parsed["gender"] = "male"
             parsed["completeness_score"] += 0.15
         
         # Extract location
@@ -318,12 +307,15 @@ class InsuranceRuleEngine:
     def validate_claim(self, parsed_query: Dict) -> Dict[str, Any]:
         """Perform rule-based validation using policy-specific rules"""
         if parsed_query.get("age") and parsed_query["age"] < 5:  # Impossible insurance age
-        # Likely parsing error - skip validation
+            # Likely parsing error - skip validation
             return {
                 "passed": True,
                 "violations": [],
-                "confidence_impact": 0.0
-                }
+                "warnings": [],
+                "applicable_rules": [],
+                "confidence_impact": 0.0,
+                "rules_source": "skipped_invalid_age"
+            }
         current_rules = self.get_applicable_rules()
         
         validation = {
@@ -720,7 +712,10 @@ CRITICAL: Every justification must cite specific page numbers. Never approve wit
 # --- Enhanced QA Chain with Source Tracking ---
 def create_enhanced_qa_chain(vs: FAISS, page_mapping: Dict):
     """Create QA chain with enhanced source tracking"""
-    llm = Ollama(model=MODEL_NAME, temperature=0.1)
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if not groq_api_key:
+        raise ValueError("GROQ_API_KEY is not set. Add it to your .env file and restart the app.")
+    llm = ChatGroq(model=MODEL_NAME, temperature=0.1, groq_api_key=groq_api_key)
     prompt, parser = create_enhanced_prompt_template()
     
     chain = RetrievalQA.from_chain_type(
@@ -806,11 +801,26 @@ def process_enhanced_response(response: str, parser, rule_validation: Dict) -> T
         # Ensure source_pages is always a list of ints
         if isinstance(parsed.get("source_pages"), str):
             page_nums = re.findall(r'page\s*(\d+)', parsed["source_pages"], re.IGNORECASE)
-            try:
-                parsed["source_pages"] = [int(p) for p in page_nums]
-            except (ValueError, TypeError):
-                parsed["source_pages"] = []
-        elif not isinstance(parsed.get("source_pages"), list):
+            parsed["source_pages"] = [int(p) for p in page_nums if p.isdigit()]
+        elif isinstance(parsed.get("source_pages"), list):
+            normalized = []
+            for item in parsed["source_pages"]:
+                if isinstance(item, int):
+                    normalized.append(item)
+                elif isinstance(item, float):
+                    normalized.append(int(item))
+                elif isinstance(item, str):
+                    # Try "page N" pattern first (e.g. "page 7", "Page 12", "Section 2 page 7")
+                    page_match = re.search(r'page\s*(\d+)', item, re.IGNORECASE)
+                    if page_match:
+                        normalized.append(int(page_match.group(1)))
+                    else:
+                        # Fall back to first digit sequence (e.g. "7", "p.7", "7.")
+                        digit_match = re.search(r'\d+', item)
+                        if digit_match:
+                            normalized.append(int(digit_match.group()))
+            parsed["source_pages"] = normalized
+        else:
             parsed["source_pages"] = []
         
         # Convert reasoning_steps to list if string
@@ -824,7 +834,15 @@ def process_enhanced_response(response: str, parser, rule_validation: Dict) -> T
         # Ensure for REJECTED, amount is 0
         if parsed.get("decision") == "REJECTED":
             parsed["amount"] = 0
-        
+
+        # Normalize rule_violations to a list of strings
+        rv = parsed.get("rule_violations", [])
+        if isinstance(rv, str):
+            rv = [rv] if rv.strip() else []
+        elif not isinstance(rv, list):
+            rv = []
+        parsed["rule_violations"] = [str(v) for v in rv if v]
+
         return parsed, parse_method
         
     except Exception as e:
@@ -1056,491 +1074,296 @@ def create_analytics_dashboard():
     recent_df["timestamp"] = recent_df["timestamp"].dt.strftime("%H:%M:%S")
     st.dataframe(recent_df, use_container_width=True)
 
-# --- Reasoning Path Display ---
-def display_reasoning_path(response: Dict):
-    """Display detailed reasoning path"""
-    st.subheader("🧠 AI Reasoning Path")
-    
-    # Query Analysis
-    with st.expander("1️⃣ Query Analysis", expanded=False):
-        parsed_query = response.get("parsed_query", {})
-        if parsed_query:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Extracted Information:**")
-                for key, value in parsed_query.items():
-                    if value and key != "completeness_score":
-                        st.write(f"• {key.replace('_', ' ').title()}: {value}")
-            
-            with col2:
-                completeness = parsed_query.get("completeness_score", 0)
-                st.metric("Query Completeness", f"{completeness:.1%}")
-                
-                missing_fields = []
-                if not parsed_query.get("age"): missing_fields.append("age")
-                if not parsed_query.get("gender"): missing_fields.append("gender")
-                if not parsed_query.get("condition"): missing_fields.append("condition")
-                if not parsed_query.get("policy_duration"): missing_fields.append("policy duration")
-                
-                if missing_fields:
-                    st.warning(f"Missing: {', '.join(missing_fields)}")
-    
-    # Rule Validation
-    with st.expander("2️⃣ Rule Validation", expanded=False):
-        rule_validation = response.get("rule_validation", {})
-        if rule_validation:
-            if rule_validation.get("violations"):
-                st.error("**Rule Violations Found:**")
-                for violation in rule_validation["violations"]:
-                    st.write(f"❌ {violation}")
-            
-            if rule_validation.get("warnings"):
-                st.warning("**Warnings:**")
-                for warning in rule_validation["warnings"]:
-                    st.write(f"⚠️ {warning}")
-            
-            if rule_validation.get("applicable_rules"):
-                st.success("**Applicable Rules:**")
-                for rule in rule_validation["applicable_rules"]:
-                    st.write(f"✅ {rule}")
-    
-    # AI Reasoning Steps
-    with st.expander("3️⃣ AI Analysis Steps", expanded=True):
-        reasoning_steps = response.get("reasoning_steps", [])
-        if reasoning_steps:
-            for i, step in enumerate(reasoning_steps, 1):
-                st.write(f"**Step {i}:** {step}")
-        else:
-            st.write("No detailed reasoning steps available")
-    
-    # Source Citations
-    with st.expander("4️⃣ Source Citations", expanded=False):
-        source_pages = response.get("source_pages", [])
-        justification = response.get("justification", "")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if source_pages:
-                st.write("**Referenced Pages:**")
-                for page in source_pages:
-                    st.write(f"📄 Page {page}")
-            else:
-                st.write("No specific page references found")
-        
-        with col2:
-            st.write("**Supporting Evidence:**")
-            st.write(justification)
-    
-    # Confidence Breakdown
-    with st.expander("5️⃣ Confidence Analysis", expanded=False):
-        confidence_breakdown = response.get("confidence_breakdown", {})
-        confidence_explanation = response.get("confidence_explanation", "")
-        
-        if confidence_breakdown:
-            st.write("**Confidence Factors:**")
-            for factor, score in confidence_breakdown.items():
-                if isinstance(score, (int, float)):
-                    st.write(f"• {factor.replace('_', ' ').title()}: {score:.2f}")
-        
-        if confidence_explanation:
-            st.info(confidence_explanation)
 
-# --- JSON Output Display ---
-def display_json_output(response: Dict):
-    """Display JSON output in a formatted box"""
-    st.subheader("📄 JSON Output")
-    
-    # Create clean JSON structure
-    json_output = {
-        "Decision": response.get("decision", "Unknown"),
-        "Amount": response.get("amount", 0),
-        "Justification": response.get("justification", ""),
-        "Confidence": response.get("final_confidence", response.get("confidence", 0.0)),
-        "RuleViolations": response.get("rule_violations", []),
-        "SourcePages": response.get("source_pages", [])
-    }
-    
-    # Display in a formatted box
-    st.markdown(f"```json\n{json.dumps(json_output, indent=2, ensure_ascii=False)}\n```")
+# --- Compact Response Renderer ---
+def render_response(response: Dict, compact: bool = False):
+    """Render a claim analysis response. Compact mode omits the details expander."""
+    if not isinstance(response, dict):
+        st.error("Invalid response data")
+        return
 
-# --- Main Streamlit Application ---
+    decision = response.get("decision", "Unknown")
+    confidence = response.get("final_confidence", response.get("confidence", 0))
+    amount = response.get("amount", 0)
+    justification = response.get("justification", "")
+    violations = response.get("rule_violations", [])
+    source_pages = response.get("source_pages", [])
+
+    # Error state
+    if decision == "ERROR":
+        st.error(f"⚠️ {response.get('error', 'Processing error')}")
+        return
+
+    # Decision badge
+    if decision == "APPROVED":
+        st.success(f"✅ **APPROVED** — Confidence: {confidence:.0%}")
+    elif decision == "REJECTED":
+        st.error(f"❌ **REJECTED** — Confidence: {confidence:.0%}")
+    else:
+        st.warning(f"ℹ️ **{decision}** — Confidence: {confidence:.0%}")
+
+    # Amount (only if meaningful)
+    if isinstance(amount, (int, float)) and amount > 0:
+        st.markdown(f"💰 **Amount:** ₹{amount:,}")
+    elif isinstance(amount, str) and amount not in ("0", ""):
+        st.markdown(f"💰 **Amount:** {amount}")
+
+    # Justification
+    if justification:
+        st.markdown(f"**Justification:** {justification}")
+
+    # Violations (inline) — guard against string values
+    if violations:
+        if isinstance(violations, str):
+            violations = [violations]
+        if isinstance(violations, list) and violations:
+            for v in violations:
+                st.markdown(f"⚠️ _{v}_")
+
+    # Source pages
+    if source_pages:
+        st.caption(f"📄 Pages: {', '.join(str(p) for p in source_pages)}")
+
+    # Single details expander (hidden in compact mode to keep history clean)
+    if not compact:
+        with st.expander("View Details", expanded=False):
+            # Reasoning steps
+            steps = response.get("reasoning_steps", [])
+            if steps:
+                st.markdown("**Reasoning Steps:**")
+                for i, step in enumerate(steps, 1):
+                    clean_step = re.sub(
+                        r'^\s*(?:step\s*)?\d+[.):]\s+', '', str(step), flags=re.IGNORECASE
+                    )
+                    st.markdown(f"{i}. {clean_step}")
+                st.markdown("---")
+
+            # JSON output
+            st.json({
+                "decision": decision,
+                "amount": amount,
+                "justification": justification,
+                "confidence": round(confidence, 4) if isinstance(confidence, float) else confidence,
+                "rule_violations": violations,
+                "source_pages": source_pages,
+                "reasoning_steps": steps,
+            })
+
+
+# --- Main Application ---
 def main():
-    st.markdown('<div class="main-header">', unsafe_allow_html=True)
-    st.title("📄 Decision Co-Pilot: AI-Powered Insurance Claims Assistant")
-    st.markdown("*Enhanced with Smart Query Processing, Rule Validation & Source Citations*")
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Pre-initialize embedding model to check connectivity
+    if not os.environ.get("GROQ_API_KEY"):
+        st.error("🔑 **GROQ_API_KEY is not set.** Add it to your `.env` file and restart.")
+        st.stop()
+
+    st.title("📄 Decision Co-Pilot")
+    st.caption("AI-Powered Insurance Claims Analysis · Groq LLaMA 3.3 70B")
+
+    # --- Embedding model init ---
     if "embedding_check_done" not in st.session_state:
-        with st.spinner("🔄 Initializing embedding model (first time may take a moment)..."):
+        with st.spinner("Initializing embedding model…"):
             embeddings, error = initialize_embedding_model()
             if error:
                 st.error(error)
-                st.warning("⚠️ **Cannot proceed without embedding model.**")
-                st.info("""
-                **Possible Solutions:**
-                1. **Check Internet Connection:** The model needs to download from HuggingFace on first use
-                2. **Check Firewall/Proxy:** Ensure access to `huggingface.co`
-                3. **Manual Download:** Run this command in your terminal:
-                   ```
-                   python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
-                   ```
-                4. **Alternative:** If offline, consider using a different embedding method
-                """)
                 st.stop()
-            else:
-                st.session_state.embedding_check_done = True
-                st.success("✅ Embedding model loaded successfully!")
-    
-    # Initialize components
+            st.session_state.embedding_check_done = True
+
+    # --- Components ---
     if "query_parser" not in st.session_state:
         st.session_state.query_parser = QueryParser()
     if "rule_engine" not in st.session_state:
         st.session_state.rule_engine = InsuranceRuleEngine()
     if "confidence_calc" not in st.session_state:
         st.session_state.confidence_calc = ConfidenceCalculator()
-    
-    # Sidebar
+
+    # --- Sidebar ---
     with st.sidebar:
-        st.header("📁 Document Management")
-        
-        uploaded_file = st.file_uploader(
-            "Upload Insurance Policy PDF", 
-            type="pdf",
-            help="Upload your insurance policy document for analysis"
-        )
-        
+        st.header("📁 Upload Policy")
+        uploaded_file = st.file_uploader("Insurance Policy PDF", type="pdf")
+
         if uploaded_file:
-            # Process uploaded file
             os.makedirs(TEMP_DIR, exist_ok=True)
             file_path = os.path.join(TEMP_DIR, uploaded_file.name)
-            
             with open(file_path, "wb") as f:
                 f.write(uploaded_file.getvalue())
-            
-            # Create enhanced vector store
+
             vector_store, page_mapping, extracted_rules = create_enhanced_vector_store(file_path)
             qa_chain, output_parser = create_enhanced_qa_chain(vector_store, page_mapping)
-            
-            # Store in session state
+
             st.session_state.qa_chain = qa_chain
             st.session_state.parser = output_parser
             st.session_state.page_mapping = page_mapping
             st.session_state.document_name = uploaded_file.name
-            
-            # Initialize batch processor
             st.session_state.batch_processor = BatchProcessor(
                 qa_chain, output_parser, st.session_state.query_parser,
-                st.session_state.rule_engine, st.session_state.confidence_calc, page_mapping
+                st.session_state.rule_engine, st.session_state.confidence_calc, page_mapping,
             )
-            # Update rule engine with extracted rules
             st.session_state.rule_engine.extracted_rules = extracted_rules
-    
-            # Show extracted rules in sidebar
+
             if extracted_rules:
-                st.sidebar.success(f"✅ Extracted {len(extracted_rules)} policy-specific rules")
-                with st.sidebar.expander("📋 Policy Rules Detected"):
+                with st.expander("📋 Detected Policy Rules"):
                     for category, rules in extracted_rules.items():
-                        st.write(f"**{category.replace('_', ' ').title()}:**")
+                        st.markdown(f"**{category.replace('_', ' ').title()}**")
                         if isinstance(rules, dict):
-                            for key, value in rules.items():
-                                st.write(f"  • {key}: {value}")
+                            for k, v in rules.items():
+                                st.write(f"  • {k}: {v}")
                         elif isinstance(rules, list):
-                            for rule in rules:
-                                st.write(f"  • {rule}")
+                            for r in rules:
+                                st.write(f"  • {r}")
                         else:
                             st.write(f"  • {rules}")
-            else:
-                st.sidebar.warning("⚠️ Using default rules - no policy-specific rules found")
-        
-        # System Status
-        st.header("⚡ System Status")
+
+        st.divider()
         if "qa_chain" in st.session_state:
-            st.success(f"✅ Document: {st.session_state.get('document_name', 'Loaded')}")
-            st.success("✅ AI Model: Ready")
-            st.success("✅ Rule Engine: Active")
+            st.success(f"📄 {st.session_state.get('document_name', 'Loaded')}")
+            st.success("🤖 Model ready")
         else:
-            st.warning("⏳ Upload document to activate")
-    
-    # Main content area
-    if "qa_chain" in st.session_state:
-        # Create tabs for different functionalities
-        tab1, tab2, tab3 = st.tabs(["💬 Single Query", "📦 Batch Processing", "📊 Analytics"])
-        
-        with tab1:
-            st.subheader("Single Query Analysis")
-            
-            # Initialize chat history
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-            
-            # Display chat history
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    if message["role"] == "assistant":
-                        response = message["content"]
-                        if isinstance(response, dict) and "error" not in response:
-                            # Display main decision
-                            decision = response.get("decision", "Unknown")
-                            confidence = response.get("final_confidence", response.get("confidence", 0))
-                            
-                            # Decision display with color coding
-                            if decision == "APPROVED":
-                                st.success(f"✅ **APPROVED** (Confidence: {confidence:.1%})")
-                            elif decision == "REJECTED":
-                                st.error(f"❌ **REJECTED** (Confidence: {confidence:.1%})")
-                            else:
-                                st.warning(f"⚠️ **{decision}** (Confidence: {confidence:.1%})")
-                            
-                            # Amount and justification
-                            amount = response.get("amount", 0)
-                            if amount and amount != 0:
-                                if isinstance(amount, (int, float)) and amount > 0:
-                                    st.info(f"💰 **Amount:** ₹{amount:,}")
-                                else:
-                                    st.info(f"💰 **Amount:** {amount}")
-                            
-                            justification = response.get("justification", "")
-                            if justification:
-                                st.markdown(f"**Justification:** {justification}")
-                            
-                            # Show rule violations if any
-                            violations = response.get("rule_violations", [])
-                            if violations:
-                                st.error("**Rule Violations:**")
-                                for violation in violations:
-                                    st.write(f"• {violation}")
-                            
-                            # Display reasoning path
-                            display_reasoning_path(response)
-                            
-                            # Display JSON output
-                            display_json_output(response)
-                            
+            st.info("Upload a policy PDF to begin")
+
+    # --- Welcome screen (no document uploaded) ---
+    if "qa_chain" not in st.session_state:
+        st.info("👆 Upload an insurance policy PDF in the sidebar to get started.")
+        st.markdown("""
+**How it works:**
+1. Upload your insurance policy document
+2. Ask claim questions in natural language
+3. Get AI-powered decisions with justifications and page references
+
+**Example queries:**
+- *46-year-old male, knee surgery in Pune, 3-month-old policy*
+- *Pre-existing diabetes, 30-year-old female, policy 2 years old*
+- *Accidental injury claim, broken arm, 6-month policy*
+- *Maternity delivery, policy purchased 10 months ago*
+        """)
+        return
+
+    # =================================================================
+    # Tabs
+    # =================================================================
+    tab_chat, tab_batch, tab_analytics = st.tabs(
+        ["💬 Claims Analysis", "📦 Batch Processing", "📊 Analytics"]
+    )
+
+    # --- Tab 1: Chat ---
+    with tab_chat:
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        # Chat input (always visible at top)
+        query = st.chat_input("Describe the insurance claim…")
+
+        if query:
+            # Process the new query first so it appears at the top
+            st.session_state.messages.insert(0, {"role": "user", "content": query})
+            with st.spinner("Analyzing claim…"):
+                try:
+                    result = st.session_state.batch_processor.process_single_query(query)
+                    if "interaction_log" not in st.session_state:
+                        st.session_state.interaction_log = []
+                    st.session_state.interaction_log.append(result)
+                    st.session_state.messages.insert(1, {"role": "assistant", "content": result})
+                except Exception as e:
+                    st.session_state.messages.insert(1, {
+                        "role": "assistant",
+                        "content": {"decision": "ERROR", "error": str(e)},
+                    })
+            st.rerun()
+
+        # Render messages newest-first (they are already stored in reverse order)
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    # First assistant message (index 1) gets full details;
+                    # older ones are compact.
+                    is_latest = (st.session_state.messages.index(msg) == 1
+                                 and len(st.session_state.messages) >= 2)
+                    render_response(msg["content"], compact=not is_latest)
+                else:
+                    st.markdown(msg["content"])
+
+    # --- Tab 2: Batch Processing ---
+    with tab_batch:
+        st.markdown("Process multiple claims at once — one query per line.")
+
+        batch_input = st.text_area(
+            "Claims:",
+            height=150,
+            placeholder=(
+                "46-year-old male, knee surgery, 3-month policy\n"
+                "30-year-old female, diabetes, 2-year policy\n"
+                "Accidental injury, broken arm, 6-month policy"
+            ),
+        )
+
+        if st.button("🚀 Process All", type="primary") and batch_input:
+            queries = [q.strip() for q in batch_input.split("\n") if q.strip()]
+            if not queries:
+                st.warning("No valid queries found.")
+            else:
+                progress = st.progress(0)
+                batch_results = []
+
+                for i, q in enumerate(queries):
+                    try:
+                        result = st.session_state.batch_processor.process_single_query(q)
+                        result["query"] = q
+                        batch_results.append(result)
+                        if "interaction_log" not in st.session_state:
+                            st.session_state.interaction_log = []
+                        st.session_state.interaction_log.append(result)
+                    except Exception as e:
+                        batch_results.append({
+                            "query": q, "error": str(e), "decision": "ERROR",
+                        })
+                    progress.progress((i + 1) / len(queries))
+
+                progress.empty()
+
+                # Summary metrics
+                approved = sum(1 for r in batch_results if r.get("decision") == "APPROVED")
+                rejected = sum(1 for r in batch_results if r.get("decision") == "REJECTED")
+                errors = sum(1 for r in batch_results if r.get("decision") == "ERROR")
+                confs = [r.get("final_confidence", r.get("confidence", 0)) for r in batch_results]
+                avg_conf = np.mean(confs) if confs else 0
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Total", len(batch_results))
+                c2.metric("Approved", approved)
+                c3.metric("Rejected", rejected)
+                c4.metric("Errors", errors)
+
+                # Results table
+                results_df = pd.DataFrame([
+                    {
+                        "Query": r.get("query", "")[:80],
+                        "Decision": r.get("decision", "Unknown"),
+                        "Amount": r.get("amount", 0),
+                        "Confidence": f"{r.get('final_confidence', r.get('confidence', 0)):.0%}",
+                        "Violations": len(r.get("rule_violations", [])),
+                    }
+                    for r in batch_results
+                ])
+                st.dataframe(results_df, use_container_width=True)
+
+                csv = results_df.to_csv(index=False)
+                st.download_button(
+                    "📥 Download CSV", csv,
+                    f"results_{datetime.now():%Y%m%d_%H%M%S}.csv", "text/csv",
+                )
+
+                # Per-query details
+                for i, r in enumerate(batch_results):
+                    label = r.get("query", "Query")[:60]
+                    with st.expander(f"#{i+1} — {label}"):
+                        if "error" in r:
+                            st.error(r["error"])
                         else:
-                            st.error("Error processing query")
-                            if "raw_response" in response:
-                                with st.expander("Raw Response"):
-                                    st.code(response["raw_response"])
-                    else:
-                        st.markdown(message["content"])
-            
-            # Query input
-            query = st.chat_input("Enter your insurance claim query (e.g., '46-year-old male, knee surgery in Pune, 3-month-old policy')...")
-            
-            if query:
-                # Add user message
-                st.session_state.messages.append({"role": "user", "content": query})
-                
-                with st.chat_message("user"):
-                    st.markdown(query)
-                
-                with st.chat_message("assistant"):
-                    with st.spinner("🔍 Analyzing query and processing claim..."):
-                        # Process query with full pipeline
-                        try:
-                            result = st.session_state.batch_processor.process_single_query(query)
-                            
-                            # Log interaction
-                            if "interaction_log" not in st.session_state:
-                                st.session_state.interaction_log = []
-                            st.session_state.interaction_log.append(result)
-                            
-                            # Display result
-                            decision = result.get("decision", "Unknown")
-                            confidence = result.get("final_confidence", result.get("confidence", 0))
-                            
-                            # Decision display
-                            if decision == "APPROVED":
-                                st.success(f"✅ **APPROVED** (Confidence: {confidence:.1%})")
-                            elif decision == "REJECTED":
-                                st.error(f"❌ **REJECTED** (Confidence: {confidence:.1%})")
-                            else:
-                                st.warning(f"⚠️ **{decision}** (Confidence: {confidence:.1%})")
-                            
-                            # Amount and justification
-                            amount = result.get("amount", 0)
-                            if amount and amount != 0:
-                                if isinstance(amount, (int, float)) and amount > 0:
-                                    st.info(f"💰 **Amount:** ₹{amount:,}")
-                                else:
-                                    st.info(f"💰 **Amount:** {amount}")
-                            
-                            justification = result.get("justification", "")
-                            if justification:
-                                st.markdown(f"**Justification:** {justification}")
-                            
-                            # Show rule violations if any
-                            violations = result.get("rule_violations", [])
-                            if violations:
-                                st.error("**Rule Violations:**")
-                                for violation in violations:
-                                    st.write(f"• {violation}")
-                            
-                            # Display reasoning path
-                            display_reasoning_path(result)
-                            
-                            # Display JSON output
-                            display_json_output(result)
-                            
-                            # Add to message history
-                            st.session_state.messages.append({"role": "assistant", "content": result})
-                            
-                        except Exception as e:
-                            st.error(f"Error processing query: {str(e)}")
-        
-        with tab2:
-            st.subheader("Batch Query Processing")
-            st.markdown("Process multiple queries simultaneously for efficiency")
-            
-            # Batch input
-            batch_input = st.text_area(
-                "Enter multiple queries (one per line):",
-                height=200,
-                placeholder="""46-year-old male, knee surgery in Pune, 3-month-old policy
-30-year-old female, diabetes treatment, 2-year-old policy
-Accidental injury claim, broken arm, 6-month policy
-Maternity delivery claim, policy purchased 10 months ago""",
-                help="Enter each query on a separate line. The system will process all queries and provide structured results."
-            )
-            
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                process_batch = st.button("🚀 Process Batch", type="primary")
-            with col2:
-                if batch_input:
-                    query_count = len([q.strip() for q in batch_input.split('\n') if q.strip()])
-                    st.info(f"Ready to process {query_count} queries")
-            
-            if process_batch and batch_input:
-                queries = [q.strip() for q in batch_input.split('\n') if q.strip()]
-                
-                if queries:
-                    with st.spinner(f"Processing {len(queries)} queries..."):
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        batch_results = []
-                        for i, query in enumerate(queries):
-                            status_text.text(f"Processing query {i+1}/{len(queries)}: {query[:50]}...")
-                            
-                            try:
-                                result = st.session_state.batch_processor.process_single_query(query)
-                                batch_results.append(result)
-                                
-                                # Log to interaction history
-                                if "interaction_log" not in st.session_state:
-                                    st.session_state.interaction_log = []
-                                st.session_state.interaction_log.append(result)
-                                
-                            except Exception as e:
-                                batch_results.append({
-                                    "query": query if 'query' in locals() else "Unknown Query",
-                                    "error": str(e),
-                                    "decision": "ERROR",
-                                    "confidence": 0.0
-                                })
-                            
-                            progress_bar.progress((i + 1) / len(queries))
-                        
-                        status_text.text("✅ Batch processing complete!")
-                        
-                        # Display results
-                        st.subheader("📋 Batch Results")
-                        
-                        # Summary metrics
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        approved_count = sum(1 for r in batch_results if r.get("decision") == "APPROVED")
-                        rejected_count = sum(1 for r in batch_results if r.get("decision") == "REJECTED")
-                        error_count = sum(1 for r in batch_results if r.get("decision") == "ERROR")
-                        avg_confidence = np.mean([r.get("final_confidence", r.get("confidence", 0)) for r in batch_results])
-                        
-                        with col1:
-                            st.metric("Approved", approved_count)
-                        with col2:
-                            st.metric("Rejected", rejected_count)
-                        with col3:
-                            st.metric("Errors", error_count)
-                        with col4:
-                            st.metric("Avg Confidence", f"{avg_confidence:.2f}")
-                        
-                        # Detailed results table
-                        results_df = pd.DataFrame([
-                            {
-                                "Query": r.get("query", "")[:100] + "..." if len(r.get("query", "")) > 100 else r.get("query", ""),
-                                "Decision": r.get("decision", "Unknown"),
-                                "Amount": str(r.get("amount", 0)),
-                                "Confidence": f"{r.get('final_confidence', r.get('confidence', 0)):.2%}",
-                                "Rule Violations": len(r.get("rule_violations", [])),
-                                "Source Pages": ", ".join(map(str, r.get("source_pages", []))) if r.get("source_pages") else "None"
-                            }
-                            for r in batch_results
-                        ])
-                        
-                        st.dataframe(results_df, use_container_width=True)
-                        
-                        # Export option
-                        csv_data = results_df.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Download Results as CSV",
-                            data=csv_data,
-                            file_name=f"batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                        
-                        # Display JSON outputs for each query
-                        st.subheader("🧾 JSON Outputs")
-                        for i, result in enumerate(batch_results):
-                            with st.expander(f"Query {i+1}: {result.get('query', 'Unknown Query')[:50]}...", expanded=False):
-                                if "error" in result:
-                                    st.error(f"Error: {result['error']}")
-                                else:
-                                    # Create clean JSON structure
-                                    json_output = {
-                                        "Decision": result.get("decision", "Unknown"),
-                                        "Amount": result.get("amount", 0),
-                                        "Justification": result.get("justification", ""),
-                                        "Confidence": result.get("final_confidence", result.get("confidence", 0.0)),
-                                        "RuleViolations": result.get("rule_violations", []),
-                                        "SourcePages": result.get("source_pages", [])
-                                    }
-                                    st.markdown(f"```json\n{json.dumps(json_output, indent=2, ensure_ascii=False)}\n```")
-        
-        with tab3:
-            create_analytics_dashboard()
-    
-    else:
-        # Welcome screen
-        st.info("👆 Please upload an insurance policy PDF document to start analyzing claims")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("""
-            ### 🚀 **Enhanced Features:**
-            - **Smart Query Processing** - Extracts structured information
-            - **Rule-Based Validation** - Insurance domain expertise
-            - **Source Citations** - Page-level references  
-            - **Multi-Factor Confidence** - Comprehensive scoring
-            - **Batch Processing** - Handle multiple queries
-            - **Analytics Dashboard** - Decision insights
-            - **Reasoning Transparency** - Step-by-step analysis
-            """)
-        
-        with col2:
-            st.markdown("""
-            ### 📋 **Example Queries:**
-            - "46-year-old male, knee surgery in Pune, 3-month-old policy"
-            - "Pre-existing diabetes, 30-year-old female, policy 2 years old"
-            - "Accidental injury claim, broken arm, 6-month policy"
-            - "Maternity delivery, policy purchased 10 months ago"
-            - "Cardiac surgery claim, 55-year-old male, comprehensive policy"
-            """)
-        
-        st.markdown("---")
-        st.markdown("*Built with Advanced RAG Pipeline + Ollama Llama 3 + LangChain + FAISS + Streamlit*")
+                            render_response(r, compact=False)
+
+    # --- Tab 3: Analytics ---
+    with tab_analytics:
+        create_analytics_dashboard()
+
 
 if __name__ == "__main__":
     main()
