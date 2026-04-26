@@ -3,6 +3,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
+from tech_lab import build_tech_demo_manifest
+
+
+TECH_LAB_BASE_URL = "http://localhost:8502"
+
 
 def initialize_session_state(defaults: Dict[str, Any]) -> None:
     for key, value in defaults.items():
@@ -58,6 +63,12 @@ def render_sidebar() -> Optional[Any]:
             st.caption("Loaded policy")
             st.write(st.session_state.document_profile.get("document_name", "Unnamed document"))
             st.caption(f"{st.session_state.document_profile.get('page_count', 0)} pages")
+
+        st.markdown("---")
+        with st.expander("Technology lab", expanded=False):
+            st.caption("Run `python backend_api.py` and open the local demos on port 8502.")
+            for demo in build_tech_demo_manifest():
+                st.markdown(f"[{demo['title']}]({TECH_LAB_BASE_URL}{demo['url']})")
 
         return uploaded_file
 

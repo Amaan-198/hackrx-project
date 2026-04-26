@@ -16,5 +16,12 @@ venv/
 # VS Code
 .vscode/
 
+# Java build output
+java-frontend/target/
+
+# API uploads
+temp/api_uploads/
+temp/*.log
+
 # macOS
 .DS_Store

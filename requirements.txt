@@ -1,4 +1,7 @@
 streamlit
+fastapi
+uvicorn
+python-multipart
 langchain>=0.1.0
 langchain-classic>=0.1.0
 langchain-community>=0.1.0

@@ -1,0 +1,16 @@
+<!ELEMENT claimWorkflow (summary, step+)>
+<!ATTLIST claimWorkflow
+  title CDATA #REQUIRED
+  owner CDATA #REQUIRED
+>
+
+<!ELEMENT summary (#PCDATA)>
+
+<!ELEMENT step (title, detail)>
+<!ATTLIST step
+  id CDATA #REQUIRED
+  status (complete|active|planned) #REQUIRED
+>
+
+<!ELEMENT title (#PCDATA)>
+<!ELEMENT detail (#PCDATA)>

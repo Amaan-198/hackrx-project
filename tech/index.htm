@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Technology Lab</title>
+    <link rel="stylesheet" href="assets/tech-lab.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero-panel">
+        <span class="eyebrow">Technology Lab</span>
+        <h1>Small local demos, kept clean on purpose.</h1>
+        <p>
+          This repo stays Python-first, so the extra technologies live here as lightweight
+          static examples. Nothing new needs a global install, and nothing spills into the
+          main insurance flow.
+        </p>
+        <div class="hero-actions">
+          <a class="link-chip" href="scientific-calculator.html">Open Calculator</a>
+          <a class="ghost-chip" href="angularjs-auth.html">Open AngularJS Demo</a>
+          <a class="ghost-chip" href="xml/claim-workflow.xml">Open XML Workflow</a>
+        </div>
+      </section>
+
+      <section class="section-header">
+        <span class="eyebrow">Case Study</span>
+        <h2>Website evaluation in one screen</h2>
+        <p class="section-copy">
+          The current repo already has a strong visual direction: warm background, restrained
+          accents, and focused layouts. This case-study page mirrors that style and keeps the
+          add-on demos discoverable without making the project feel crowded.
+        </p>
+      </section>
+
+      <section class="card-grid">
+        <article class="card">
+          <div class="meta-line">HTML + CSS</div>
+          <h3>Static presentation page</h3>
+          <p>
+            A simple landing page is enough for the case-study requirement. It uses one shared
+            stylesheet, a responsive grid, and the same visual tone as the Streamlit app.
+          </p>
+          <div class="demo-links">
+            <a class="link-chip" href="index.htm">This page</a>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="meta-line">JavaScript</div>
+          <h3>Scientific calculator</h3>
+          <p>
+            The calculator supports arithmetic, parentheses, powers, logs, roots, and trig
+            functions. It is small enough to understand quickly and does not require a build
+            step.
+          </p>
+          <div class="demo-links">
+            <a class="link-chip" href="scientific-calculator.html">Try calculator</a>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="meta-line">AngularJS</div>
+          <h3>Registration and login</h3>
+          <p>
+            This page uses a local AngularJS controller for a tiny auth-style flow. The data is
+            in memory only, which keeps the demo honest and easy to test.
+          </p>
+          <div class="demo-links">
+            <a class="link-chip" href="angularjs-auth.html">Try auth demo</a>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="meta-line">XML + DTD + XSL</div>
+          <h3>Structured workflow document</h3>
+          <p>
+            The XML sample models the claim-review workflow, the DTD defines structure, and the
+            XSL renders it cleanly in the browser without extra tooling.
+          </p>
+          <div class="demo-links">
+            <a class="link-chip" href="xml/claim-workflow.xml">Open XML sample</a>
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

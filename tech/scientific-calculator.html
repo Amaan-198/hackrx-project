@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scientific Calculator</title>
+    <link rel="stylesheet" href="assets/tech-lab.css" />
+  </head>
+  <body>
+    <main class="page-shell page-shell--narrow">
+      <section class="calculator-shell">
+        <div class="button-row">
+          <a class="ghost-chip" href="index.htm">Back to Technology Lab</a>
+        </div>
+        <h2>Scientific Calculator</h2>
+        <p class="support-copy">
+          Minimal local demo. Trig functions use radians. Use <span class="inline-code">pow(2,3)</span>
+          or the <span class="inline-code">^</span> key for powers.
+        </p>
+        <input
+          class="calculator-display"
+          type="text"
+          data-calculator-display
+          inputmode="text"
+          placeholder="Enter an expression"
+          aria-label="Calculator display"
+        />
+
+        <div class="button-grid" data-calculator-buttons>
+          <button type="button" data-token="7">7</button>
+          <button type="button" data-token="8">8</button>
+          <button type="button" data-token="9">9</button>
+          <button type="button" data-token="/">/</button>
+          <button type="button" data-action="clear" data-role="soft">C</button>
+
+          <button type="button" data-token="4">4</button>
+          <button type="button" data-token="5">5</button>
+          <button type="button" data-token="6">6</button>
+          <button type="button" data-token="*">*</button>
+          <button type="button" data-action="delete" data-role="soft">DEL</button>
+
+          <button type="button" data-token="1">1</button>
+          <button type="button" data-token="2">2</button>
+          <button type="button" data-token="3">3</button>
+          <button type="button" data-token="-">-</button>
+          <button type="button" data-token="(">(</button>
+
+          <button type="button" data-token="0">0</button>
+          <button type="button" data-token=".">.</button>
+          <button type="button" data-token="+">+</button>
+          <button type="button" data-token=")">)</button>
+          <button type="button" data-action="evaluate" data-role="primary">=</button>
+
+          <button type="button" data-token="sin(">sin</button>
+          <button type="button" data-token="cos(">cos</button>
+          <button type="button" data-token="tan(">tan</button>
+          <button type="button" data-token="sqrt(">sqrt</button>
+          <button type="button" data-token="pow(">pow</button>
+
+          <button type="button" data-token="log(">log</button>
+          <button type="button" data-token="ln(">ln</button>
+          <button type="button" data-token="PI">PI</button>
+          <button type="button" data-token="E">E</button>
+          <button type="button" data-token="^">^</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="assets/tech-lab.js"></script>
+    <script>
+      (function () {
+        const display = document.querySelector("[data-calculator-display]");
+        const buttonContainer = document.querySelector("[data-calculator-buttons]");
+
+        function appendToken(token) {
+          display.value += token;
+          display.focus();
+        }
+
+        function evaluateCurrentExpression() {
+          try {
+            display.value = window.TechLab.evaluateScientificExpression(display.value).toString();
+          } catch (error) {
+            window.alert(error.message);
+          }
+        }
+
+        buttonContainer.addEventListener("click", function (event) {
+          const button = event.target.closest("button");
+          if (!button) {
+            return;
+          }
+
+          const token = button.getAttribute("data-token");
+          const action = button.getAttribute("data-action");
+
+          if (token) {
+            appendToken(token);
+            return;
+          }
+
+          if (action === "clear") {
+            display.value = "";
+            return;
+          }
+
+          if (action === "delete") {
+            display.value = display.value.slice(0, -1);
+            return;
+          }
+
+          if (action === "evaluate") {
+            evaluateCurrentExpression();
+          }
+        });
+
+        display.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            evaluateCurrentExpression();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

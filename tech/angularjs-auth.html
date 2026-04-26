@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en" ng-app="techLabAuth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AngularJS Registration and Login</title>
+    <link rel="stylesheet" href="assets/tech-lab.css" />
+  </head>
+  <body ng-cloak>
+    <main class="page-shell page-shell--narrow" ng-controller="AuthController as auth">
+      <section class="auth-shell">
+        <div class="button-row">
+          <a class="ghost-chip" href="index.htm">Back to Technology Lab</a>
+        </div>
+        <h2>AngularJS Registration and Login</h2>
+        <p class="support-copy">
+          This stays intentionally small: one controller, in-memory data, and one seeded account
+          for quick testing.
+        </p>
+
+        <div class="tab-row">
+          <button
+            type="button"
+            class="tab-button"
+            ng-class="{'is-active': auth.activeTab === 'register'}"
+            ng-click="auth.activeTab = 'register'"
+          >
+            Register
+          </button>
+          <button
+            type="button"
+            class="tab-button"
+            ng-class="{'is-active': auth.activeTab === 'login'}"
+            ng-click="auth.activeTab = 'login'"
+          >
+            Login
+          </button>
+        </div>
+
+        <div class="auth-grid">
+          <form class="form-shell" ng-submit="auth.submitRegister()" ng-show="auth.activeTab === 'register'">
+            <h3>Create account</h3>
+            <p class="support-copy">Local validation only. Nothing is persisted outside this page.</p>
+
+            <div class="field-group">
+              <label for="full-name">Full name</label>
+              <input id="full-name" type="text" ng-model="auth.registerForm.fullName" />
+            </div>
+
+            <div class="field-group">
+              <label for="email">Email</label>
+              <input id="email" type="email" ng-model="auth.registerForm.email" />
+            </div>
+
+            <div class="field-group">
+              <label for="city">City</label>
+              <input id="city" type="text" ng-model="auth.registerForm.city" />
+            </div>
+
+            <div class="field-group">
+              <label for="password">Password</label>
+              <input id="password" type="password" ng-model="auth.registerForm.password" />
+            </div>
+
+            <div class="field-group">
+              <label for="confirm-password">Confirm password</label>
+              <input id="confirm-password" type="password" ng-model="auth.registerForm.confirmPassword" />
+            </div>
+
+            <button type="submit">Save registration</button>
+          </form>
+
+          <form class="form-shell" ng-submit="auth.submitLogin()" ng-show="auth.activeTab === 'login'">
+            <h3>Login</h3>
+            <p class="support-copy">
+              Demo account: <span class="inline-code">demo@decision.local / Demo1234!</span>
+            </p>
+
+            <div class="field-group">
+              <label for="login-email">Email</label>
+              <input id="login-email" type="email" ng-model="auth.loginForm.email" />
+            </div>
+
+            <div class="field-group">
+              <label for="login-password">Password</label>
+              <input id="login-password" type="password" ng-model="auth.loginForm.password" />
+            </div>
+
+            <button type="submit">Run login</button>
+          </form>
+        </div>
+
+        <div class="status-banner" aria-live="polite">
+          <strong>Status:</strong> {{ auth.message }}
+        </div>
+
+        <div class="user-pills">
+          <span class="user-pill" ng-repeat="user in auth.users track by user.email">
+            {{ user.fullName }} - {{ user.email }}
+          </span>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.8.3/angular.min.js"></script>
+    <script src="assets/tech-lab.js"></script>
+    <script>
+      (function () {
+        const app = angular.module("techLabAuth", []);
+
+        app.controller("AuthController", function () {
+          const vm = this;
+          vm.activeTab = "register";
+          vm.users = window.TechLab.createSeedUsers();
+          vm.message = "Use the demo account or create a new local user.";
+          vm.registerForm = {
+            fullName: "",
+            email: "",
+            city: "",
+            password: "",
+            confirmPassword: "",
+          };
+          vm.loginForm = {
+            email: "demo@decision.local",
+            password: "Demo1234!",
+          };
+
+          vm.submitRegister = function () {
+            const result = window.TechLab.registerUser(vm.users, vm.registerForm);
+            vm.message = result.message;
+            if (!result.ok) {
+              return;
+            }
+
+            vm.users = result.users;
+            vm.loginForm.email = result.user.email;
+            vm.loginForm.password = result.user.password;
+            vm.registerForm = {
+              fullName: "",
+              email: "",
+              city: "",
+              password: "",
+              confirmPassword: "",
+            };
+            vm.activeTab = "login";
+          };
+
+          vm.submitLogin = function () {
+            const result = window.TechLab.loginUser(vm.users, vm.loginForm);
+            vm.message = result.message;
+          };
+        });
+      })();
+    </script>
+  </body>
+</html>

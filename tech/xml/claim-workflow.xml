@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="claim-workflow.xsl"?>
+<!DOCTYPE claimWorkflow SYSTEM "claim-workflow.dtd">
+<claimWorkflow title="Claim Review Workflow" owner="Decision Co-Pilot">
+  <summary>
+    Structured sample showing how the local insurance flow moves from document intake to a
+    decision with cited evidence.
+  </summary>
+  <step id="1" status="complete">
+    <title>Upload policy</title>
+    <detail>Accept one PDF policy document and extract searchable text chunks.</detail>
+  </step>
+  <step id="2" status="complete">
+    <title>Parse the query</title>
+    <detail>Pull out age, location, condition, policy duration, and claim amount.</detail>
+  </step>
+  <step id="3" status="active">
+    <title>Run rule checks</title>
+    <detail>Compare the parsed claim against waiting periods, exclusions, and age limits.</detail>
+  </step>
+  <step id="4" status="planned">
+    <title>Return the answer</title>
+    <detail>Respond with ACCEPT or REJECT, likely payout, and source evidence.</detail>
+  </step>
+</claimWorkflow>
