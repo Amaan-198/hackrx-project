@@ -10,6 +10,8 @@ import json
 import os
 from unittest.mock import MagicMock
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # ── MUST happen BEFORE importing app ─────────────────────────────────────────
 # Mock streamlit so module-level st.set_page_config / st.markdown don't crash.
 _st_mock = MagicMock()
@@ -23,13 +25,20 @@ import pytest
 
 # Now import app — all st.* calls silently hit the mock.
 import app
+from decision_core import (
+    MODEL_NAME,
+    ClaimDecisionEngine,
+    clean_json_response,
+    extract_source_evidence,
+    process_enhanced_response,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Model name constant
 # ─────────────────────────────────────────────────────────────────────────────
 class TestModelNameConstant:
     def test_model_is_groq_llama_3_3_70b(self):
-        assert app.MODEL_NAME == "llama-3.3-70b-versatile"
+        assert MODEL_NAME == "llama-3.3-70b-versatile"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,31 +47,31 @@ class TestModelNameConstant:
 class TestCleanJsonResponse:
     def test_strips_line_comments(self):
         raw = '{"key": "value"} // this is a comment\n'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         assert "//" not in cleaned
         assert '"key": "value"' in cleaned
 
     def test_strips_block_comments(self):
         raw = '{"key": /* a block comment */ "value"}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         assert "/*" not in cleaned
         assert "*/" not in cleaned
 
     def test_trailing_comma_before_brace_is_valid_json_after_clean(self):
         raw = '{"key": "value",}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         parsed = json.loads(cleaned)
         assert parsed["key"] == "value"
 
     def test_trailing_comma_before_bracket_is_valid_json_after_clean(self):
         raw = '{"items": [1, 2, 3,]}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         parsed = json.loads(cleaned)
         assert parsed["items"] == [1, 2, 3]
 
     def test_noop_on_already_clean_json(self):
         raw = '{"decision": "APPROVED", "amount": 50000}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         assert json.loads(cleaned)["decision"] == "APPROVED"
 
 
@@ -353,13 +362,13 @@ class TestResponseParsing:
     def test_structured_path(self):
         expected = json.loads(self._VALID)
         parser = self._succeeding_parser(expected)
-        result, method = app.process_enhanced_response(self._VALID, parser, self._no_violations())
+        result, method = process_enhanced_response(self._VALID, parser, self._no_violations())
         assert method == "structured"
         assert result["decision"] == "APPROVED"
         assert result["amount"] == 50000
 
     def test_direct_json_fallback(self):
-        result, method = app.process_enhanced_response(
+        result, method = process_enhanced_response(
             self._VALID, self._failing_parser(), self._no_violations()
         )
         assert method == "direct_json"
@@ -371,7 +380,7 @@ class TestResponseParsing:
             '"amount": 30000, "justification": "see page 2", '
             '"confidence": 0.8, "reasoning_steps": [], "source_pages": [2], "rule_violations": []}'
         )
-        result, method = app.process_enhanced_response(
+        result, method = process_enhanced_response(
             raw, self._failing_parser(), self._no_violations()
         )
         assert result["decision"] == "APPROVED"
@@ -383,7 +392,7 @@ class TestResponseParsing:
             '"justification": "waiting period page 1", "confidence": 0.85, '
             '"reasoning_steps": [], "source_pages": [1], "rule_violations": [],}'
         )
-        result, method = app.process_enhanced_response(
+        result, method = process_enhanced_response(
             raw, self._failing_parser(), self._no_violations()
         )
         assert result["decision"] == "REJECTED"
@@ -396,14 +405,14 @@ class TestResponseParsing:
             '"reasoning_steps": [], "source_pages": [], "rule_violations": []}\n'
             'End of response.'
         )
-        result, method = app.process_enhanced_response(
+        result, method = process_enhanced_response(
             raw, self._failing_parser(), self._no_violations()
         )
         assert method == "json_extraction"
         assert result["decision"] == "REJECTED"
 
     def test_completely_broken_input_returns_error(self):
-        result, method = app.process_enhanced_response(
+        result, method = process_enhanced_response(
             "this is totally unparseable text without any json structure",
             self._failing_parser(),
             self._no_violations(),
@@ -413,7 +422,7 @@ class TestResponseParsing:
 
     def test_missing_fields_are_defaulted(self):
         # JSON with only decision; all other fields must be defaulted
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             '{"decision": "APPROVED"}',
             self._failing_parser(),
             self._no_violations(),
@@ -427,7 +436,7 @@ class TestResponseParsing:
             "justification": "see page 4", "confidence": "0.75",
             "reasoning_steps": [], "source_pages": [4], "rule_violations": [],
         })
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             raw, self._failing_parser(), self._no_violations()
         )
         assert isinstance(result["confidence"], float)
@@ -439,7 +448,7 @@ class TestResponseParsing:
             "justification": "see page 1", "confidence": 0.8,
             "reasoning_steps": [], "source_pages": [1], "rule_violations": [],
         })
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             raw, self._failing_parser(), self._no_violations()
         )
         assert result["amount"] == 50000
@@ -454,7 +463,7 @@ class TestResponseParsing:
             "source_pages": [2],
             "rule_violations": ["None"],
         })
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             raw, self._failing_parser(), self._no_violations()
         )
         assert result["decision"] == "REJECTED"
@@ -483,7 +492,7 @@ class TestRuleOverride:
             "violations": ["Pre-existing condition waiting period not satisfied"],
             "confidence_impact": -0.4,
         }
-        result, _ = app.process_enhanced_response(raw, self._failing_parser(), rule_validation)
+        result, _ = process_enhanced_response(raw, self._failing_parser(), rule_validation)
         assert result["decision"] == "REJECTED"
         assert result["amount"] == 0
         assert len(result["rule_violations"]) > 0
@@ -496,7 +505,7 @@ class TestRuleOverride:
             "confidence": 0.8,
             "reasoning_steps": [], "source_pages": [2], "rule_violations": [],
         })
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             raw, self._failing_parser(), {"violations": [], "confidence_impact": 0.0}
         )
         assert result["amount"] == 0
@@ -512,7 +521,7 @@ class TestRuleOverride:
             "violations": ["Age 70 exceeds maximum entry age 65"],
             "confidence_impact": -0.3,
         }
-        result, _ = app.process_enhanced_response(raw, self._failing_parser(), rule_validation)
+        result, _ = process_enhanced_response(raw, self._failing_parser(), rule_validation)
         assert "Age 70 exceeds maximum entry age 65" in result["rule_violations"]
 
 
@@ -536,7 +545,7 @@ class TestGroqConnection:
         from langchain_groq import ChatGroq
         from langchain_core.messages import HumanMessage
 
-        llm = ChatGroq(model=app.MODEL_NAME, temperature=0.0, groq_api_key=api_key)
+        llm = ChatGroq(model=MODEL_NAME, temperature=0.0, groq_api_key=api_key)
         try:
             response = llm.invoke([HumanMessage(content="Reply with exactly one word: PONG")])
         except Exception as exc:
@@ -574,7 +583,7 @@ class TestBatchProcessor:
         self.cc = app.ConfidenceCalculator()
 
     def _processor(self, chain):
-        return app.BatchProcessor(
+        return ClaimDecisionEngine(
             chain, self._failing_parser(), self.qp, self.re, self.cc, {}
         )
 
@@ -632,19 +641,19 @@ class TestBatchProcessor:
 class TestCleanJsonPreservesURLs:
     def test_url_inside_string_value_is_preserved(self):
         raw = '{"justification": "See https://example.com/page for details"}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         parsed = json.loads(cleaned)
         assert "https://example.com/page" in parsed["justification"]
 
     def test_double_slash_inside_string_not_stripped(self):
         raw = '{"path": "C:\\\\Users//file"}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         # The // inside the string should remain
         assert "//" in cleaned
 
     def test_real_comment_outside_string_still_stripped(self):
         raw = '{"key": "value"} // this is a real comment\n{"k2": "v2"}'
-        cleaned = app.clean_json_response(raw)
+        cleaned = clean_json_response(raw)
         assert "// this is" not in cleaned
         assert '"key": "value"' in cleaned
 
@@ -721,7 +730,7 @@ class TestConfidenceClamping:
             "justification": "page 1", "confidence": 1.5,
             "reasoning_steps": [], "source_pages": [1], "rule_violations": [],
         })
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             raw, self._failing_parser(), {"violations": [], "confidence_impact": 0.0}
         )
         assert result["confidence"] <= 1.0
@@ -732,28 +741,13 @@ class TestConfidenceClamping:
             "justification": "page 1", "confidence": -0.5,
             "reasoning_steps": [], "source_pages": [1], "rule_violations": [],
         })
-        result, _ = app.process_enhanced_response(
+        result, _ = process_enhanced_response(
             raw, self._failing_parser(), {"violations": [], "confidence_impact": 0.0}
         )
         assert result["confidence"] >= 0.0
 
 
 class TestShowcaseHelpers:
-    def test_build_claim_query_blends_raw_and_structured_inputs(self):
-        query = app.build_claim_query(
-            raw_description="Need to assess a hospitalization claim",
-            age=44,
-            gender="Male",
-            treatment="Knee surgery",
-            policy_duration=2,
-            policy_duration_unit="year",
-            location="Pune",
-            amount=120000,
-        )
-        assert "Need to assess a hospitalization claim" in query
-        assert "44-year-old" in query
-        assert "policy 2 years old" in query
-
     def test_policy_radar_flags_conflicting_waiting_periods(self):
         text = (
             "Pre-existing diseases have a waiting period of 24 months. "
@@ -762,23 +756,11 @@ class TestShowcaseHelpers:
         radar = app.build_policy_radar(text, {"waiting_periods": {"pre_existing": 24}})
         assert radar["contradictions"], "Expected contradiction alert for differing wait values"
 
-    def test_action_plan_for_rejected_case_contains_appeal_text(self):
-        result = {
-            "decision": "REJECTED",
-            "rule_violations": ["Waiting period not satisfied"],
-            "source_pages": [4, 7],
-            "missing_fields": [],
-        }
-        radar = {"contradictions": ["Two pages list different waiting periods"]}
-        plan = app.build_action_plan(result, radar)
-        assert "Appeal" in plan["headline"] or "appeal" in plan["headline"].lower()
-        assert "reconsideration" in plan["draft"].lower()
-
     def test_extract_source_evidence_uses_page_metadata(self):
         doc = MagicMock()
         doc.page_content = "Coverage applies for listed hospitalization expenses."
         doc.metadata = {"page": 2}
-        evidence = app.extract_source_evidence([doc])
+        evidence = extract_source_evidence([doc])
         assert evidence[0]["page"] == 3
 
 

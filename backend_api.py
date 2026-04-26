@@ -55,7 +55,6 @@ async def evaluate_claim(
 def technology_index_redirect():
     return RedirectResponse(url="/tech/")
 
-
 @app.get("/tech/", include_in_schema=False)
 def technology_index():
     return FileResponse(resolve_tech_file("index.htm"))
@@ -67,6 +66,11 @@ def technology_asset(resource_path: str):
         return FileResponse(resolve_tech_file(resource_path))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Technology asset not found.") from exc
+
+
+@app.get("/", include_in_schema=False)
+def login_root():
+    return FileResponse(resolve_tech_file("angularjs-auth.html"))
 
 
 if __name__ == "__main__":

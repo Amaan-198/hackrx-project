@@ -65,12 +65,12 @@ class QueryParser:
         query_lower = normalize_whitespace(query).lower()
 
         duration_patterns = [
-            r"(\d+)[-\s]?(month|year)s?[-\s]?old\s*policy",
-            r"policy\s*(?:is\s*)?(\d+)[-\s]?(month|year)s?\s*old",
-            r"(\d+)[-\s]?(month|year)s?\s*policy",
-            r"policy\s*for\s*(\d+)[-\s]?(month|year)s?",
-            r"policy\s*(?:has\s+been\s+)?active\s+for\s*(\d+)[-\s]?(month|year)s?",
-            r"policy\s+(?:purchased|bought|taken|started|active)\s+(\d+)\s*(month|year)s?\s*ago",
+            r"(\d+)[-\s]?(day|month|year)s?[-\s]?old\s*policy",
+            r"policy\s*(?:is\s*)?(\d+)[-\s]?(day|month|year)s?\s*old",
+            r"(\d+)[-\s]?(day|month|year)s?\s*policy",
+            r"policy\s*for\s*(\d+)[-\s]?(day|month|year)s?",
+            r"policy\s*(?:has\s+been\s+)?active\s+for\s*(\d+)[-\s]?(day|month|year)s?",
+            r"policy\s+(?:purchased|bought|taken|started|active)\s+(\d+)\s*(day|month|year)s?\s*ago",
         ]
         for pattern in duration_patterns:
             match = re.search(pattern, query_lower)
@@ -147,17 +147,17 @@ class QueryParser:
     def calculate_completeness(self, parsed: Dict[str, Any]) -> float:
         score = 0.0
         if parsed.get("age"):
-            score += 0.15
+            score += 0.20
         if parsed.get("gender"):
-            score += 0.15
+            score += 0.12
         if parsed.get("condition"):
             score += 0.25
         if parsed.get("policy_duration"):
-            score += 0.15
+            score += 0.18
         if parsed.get("location"):
-            score += 0.1
+            score += 0.10
         if parsed.get("amount_mentioned"):
-            score += 0.1
+            score += 0.15
         return min(1.0, round(score, 2))
 
     def get_missing_fields(self, parsed: Dict[str, Any]) -> List[str]:
@@ -272,14 +272,19 @@ class InsuranceRuleEngine:
         }
         for category, patterns in waiting_patterns.items():
             for pattern in patterns:
-                matches = re.findall(pattern, policy_lower)
+                matches = re.findall(pattern, policy_lower, re.DOTALL)
                 if not matches:
                     continue
                 for match in matches:
                     try:
                         duration = int(match[0])
                         unit = match[1].lower()
-                        months = duration * 12 if unit.startswith("year") else max(1, round(duration / 30)) if unit.startswith("day") else duration
+                        if unit.startswith("year"):
+                            months = duration * 12
+                        elif unit.startswith("day"):
+                            months = max(0, duration // 30)
+                        else:
+                            months = duration
                         rules.setdefault("waiting_periods", {})[category] = months
                         break
                     except (IndexError, TypeError, ValueError):
@@ -295,17 +300,22 @@ class InsuranceRuleEngine:
             r"age\s*limit.*?(\d+)\s*-\s*(\d+)",
             r"eligible\s*age.*?(\d+)\s*-\s*(\d+)",
         ]:
-            matches = re.findall(pattern, policy_lower)
+            matches = re.findall(pattern, policy_lower, re.DOTALL)
             if not matches:
                 continue
             first = matches[0]
             if isinstance(first, tuple) and len(first) == 2:
-                min_age, max_age = int(first[0]), int(first[1])
-                break
+                if min_age is None:
+                    min_age = int(first[0])
+                if max_age is None:
+                    max_age = int(first[1])
+                continue
             if "minimum" in pattern:
-                min_age = int(first)
+                if min_age is None:
+                    min_age = int(first)
             if "maximum" in pattern:
-                max_age = int(first)
+                if max_age is None:
+                    max_age = int(first)
         if min_age is not None or max_age is not None:
             rules["age_limits"] = {"entry_age": {}}
             if min_age is not None:
@@ -515,9 +525,22 @@ class InsuranceRuleEngine:
 
         exclusions = rules.get("exclusions", [])
         for exclusion in exclusions:
-            if condition and re.search(r"\b" + re.escape(exclusion.lower()) + r"\b", condition):
-                validation["violations"].append(f"Treatment '{condition}' contains excluded procedure: {exclusion}")
+            if not condition:
+                continue
+            exclusion_lower = exclusion.lower()
+            condition_lower = condition.lower()
+            if exclusion_lower in condition_lower:
+                validation["violations"].append(f"Treatment '{condition}' matched excluded procedure: {exclusion}")
                 validation["confidence_impact"] -= 0.5
+                validation["passed"] = False
+                continue
+            condition_keywords = set(condition_lower.replace(",", " ").split())
+            exclusion_keywords = {
+                word for word in re.findall(r"[a-z]{4,}", exclusion_lower) if word not in {"treatment", "surgery", "therapy", "expenses"}
+            }
+            if exclusion_keywords and exclusion_keywords.issubset(condition_keywords):
+                validation["violations"].append(f"Treatment '{condition}' overlaps with excluded procedure: {exclusion}")
+                validation["confidence_impact"] -= 0.4
                 validation["passed"] = False
         return validation
 
@@ -616,6 +639,8 @@ def create_enhanced_vector_store(file_path: str, file_hash: str = "") -> Tuple[F
     status_text.text("Loading policy document...")
     progress_bar.progress(20)
     docs = PyPDFLoader(file_path).load()
+    if not docs or all(not (doc.page_content or "").strip() for doc in docs):
+        raise ValueError("The uploaded PDF appears to be empty or contains no extractable text. Please check the file.")
     full_text = "\n".join(doc.page_content for doc in docs)
     status_text.text("Chunking policy pages...")
     progress_bar.progress(45)
@@ -742,15 +767,33 @@ def _normalize_amount(value: Any) -> Any:
     if value is None:
         return 0
     cleaned = normalize_whitespace(str(value))
-    candidate = cleaned.lower().replace("inr", "").replace("rs.", "").replace("rs", "").replace(",", "").strip()
+    candidate = (
+        cleaned.lower()
+        .replace("₹", "")
+        .replace("inr", "")
+        .replace("rs.", "")
+        .replace("rs", "")
+        .replace(",", "")
+        .replace("_", "")
+        .strip()
+    )
     if re.fullmatch(r"\d+(?:\.\d+)?", candidate):
         return int(float(candidate))
-    return cleaned
+    match = re.search(r"(\d+(?:,\d+)*(?:\.\d+)?)", cleaned)
+    if match:
+        return int(float(match.group(1).replace(",", "")))
+    return 0
 
 
 def _normalize_source_pages(value: Any) -> List[int]:
     if isinstance(value, str):
-        return [int(match) for match in re.findall(r"page\s*(\d+)", value, re.IGNORECASE)]
+        pages = []
+        for match in re.findall(r"pages?\s*(\d+)", value, re.IGNORECASE):
+            pages.append(int(match))
+        if not pages:
+            for match in re.findall(r"\d+", value):
+                pages.append(int(match))
+        return pages
     if isinstance(value, list):
         pages = []
         for item in value:
@@ -759,7 +802,7 @@ def _normalize_source_pages(value: Any) -> List[int]:
             elif isinstance(item, float):
                 pages.append(int(item))
             elif isinstance(item, str):
-                match = re.search(r"page\s*(\d+)", item, re.IGNORECASE) or re.search(r"\d+", item)
+                match = re.search(r"pages?\s*(\d+)", item, re.IGNORECASE) or re.search(r"\d+", item)
                 if match:
                     pages.append(int(match.group(1) if match.lastindex else match.group(0)))
         return pages
@@ -899,36 +942,6 @@ def extract_source_evidence(retrieved_docs: List[Any], limit: int = 4) -> List[D
     return evidence
 
 
-def build_claim_query(
-    raw_description: str = "",
-    age: int = 0,
-    gender: str = "Not specified",
-    treatment: str = "",
-    policy_duration: int = 0,
-    policy_duration_unit: str = "month",
-    location: str = "Unspecified",
-    amount: int = 0,
-) -> str:
-    parts = []
-    if age:
-        parts.append(f"{age}-year-old")
-    if gender and gender != "Not specified":
-        parts.append(gender.lower())
-    if treatment:
-        parts.append(treatment.lower())
-    if location and location != "Unspecified":
-        parts.append(f"in {location}")
-    if policy_duration:
-        parts.append(f"policy {policy_duration} {policy_duration_unit}s old")
-    if amount:
-        parts.append(f"claim amount Rs {amount}")
-    structured = ", ".join(parts)
-    raw_description = normalize_whitespace(raw_description)
-    if raw_description and structured:
-        return f"{raw_description}. Structured claim facts: {structured}."
-    return raw_description or structured
-
-
 def _collect_waiting_period_mentions(policy_text: str, keywords: List[str]) -> List[int]:
     values = set()
     lowered = policy_text.lower()
@@ -976,99 +989,6 @@ def build_policy_radar(policy_text: str, extracted_rules: Dict[str, Any]) -> Dic
         "contradiction_count": len(contradictions),
         "missing_count": len(missing_signals),
     }
-
-
-def build_policy_brief(extracted_rules: Dict[str, Any], document_profile: Dict[str, Any], policy_radar: Dict[str, Any]) -> Dict[str, Any]:
-    exclusions = extracted_rules.get("exclusions", [])
-    return {
-        "metrics": [
-            ("Pages", str(document_profile.get("page_count", 0))),
-            ("Chunks", str(document_profile.get("chunk_count", 0))),
-            ("Rule groups", str(len(extracted_rules))),
-            ("Radar alerts", str(policy_radar.get("ambiguity_count", 0) + policy_radar.get("contradiction_count", 0))),
-        ],
-        "rule_chips": [
-            f"Pre-existing {extracted_rules.get('waiting_periods', {}).get('pre_existing')}m" if extracted_rules.get("waiting_periods", {}).get("pre_existing") else "",
-            f"Maternity {extracted_rules.get('waiting_periods', {}).get('maternity')}m" if extracted_rules.get("waiting_periods", {}).get("maternity") else "",
-            f"{len(exclusions)} exclusions" if exclusions else "No exclusions extracted",
-        ],
-    }
-
-
-def create_appeal_draft(result: Dict[str, Any], policy_radar: Dict[str, Any]) -> str:
-    pages = ", ".join(str(page) for page in result.get("source_pages", [])) or "the cited policy pages"
-    violations = "; ".join(result.get("rule_violations", [])) or "the stated denial reason"
-    contradiction_note = ""
-    if policy_radar.get("contradictions"):
-        contradiction_note = f" The policy radar also flagged a wording conflict that should be manually reviewed: {policy_radar['contradictions'][0]}"
-    return (
-        "Subject: Request for detailed reconsideration of claim decision\n\n"
-        "Hello,\n\n"
-        "I am requesting a detailed review of the current claim assessment. "
-        f"The present outcome appears to rely on {violations}. "
-        f"The supporting policy references currently point to pages {pages}.{contradiction_note}\n\n"
-        "Please confirm the exact clause relied upon, the interpretation applied, and whether any rider or exception changes the outcome. "
-        "I am ready to provide discharge summary, treatment records, policy schedule, and billing documents for a complete review.\n\n"
-        "Regards"
-    )
-
-
-def build_action_plan(result: Dict[str, Any], policy_radar: Dict[str, Any]) -> Dict[str, Any]:
-    decision = result.get("decision", "REJECTED")
-    if decision == "APPROVED":
-        return {
-            "headline": "Presentation-ready approval path",
-            "items": [
-                "Lead with the cited pages so the decision feels policy-backed, not model-backed.",
-                "Use the scenario lab to prove the system reacts predictably when claim facts change.",
-                "Mention confidence only after the coverage story is clear.",
-            ],
-            "draft": "This case is strong because the answer is policy-backed, not just model-generated, and the what-if lab shows the outcome moving when facts change.",
-        }
-    if decision == "REJECTED":
-        items = [
-            "Show the exact rule violation first so the rejection feels grounded.",
-            "Use the what-if lab to prove the outcome flips when waiting period or age assumptions change.",
-            "If the radar flags contradictions, mention that human review is still needed for disputed wording.",
-        ]
-        if policy_radar.get("contradictions"):
-            items.append("Point to the policy contradiction flag as a reason to escalate the case.")
-        return {"headline": "Appeal and escalation path", "items": items, "draft": create_appeal_draft(result, policy_radar)}
-    return {
-        "headline": "Conservative rejection path",
-        "items": [
-            "Call out the missing or weak evidence before discussing payout.",
-            "Show the cited pages so the rejection still feels policy-backed.",
-            "Use a stronger, more complete query if you want to demonstrate the accept path next.",
-        ],
-        "draft": "The system stays conservative when the claim facts or policy support are not strong enough to approve, so the demo never drifts into fake certainty.",
-    }
-
-
-def build_counterfactual_queries(original_query: str, parsed_query: Dict[str, Any], applicable_rules: Dict[str, Any]) -> List[Dict[str, str]]:
-    waiting_periods = applicable_rules.get("waiting_periods", {})
-    condition = (parsed_query.get("condition") or "").lower()
-    recommended_wait = waiting_periods.get("general", 1)
-    if any(keyword in condition for keyword in ["diabetes", "heart", "cardiac", "hypertension"]):
-        recommended_wait = waiting_periods.get("pre_existing", 24)
-    if any(keyword in condition for keyword in ["maternity", "delivery", "pregnancy"]):
-        recommended_wait = waiting_periods.get("maternity", 9)
-    age_limit = applicable_rules.get("age_limits", {}).get("entry_age", {}).get("max", 65)
-    scenarios = [
-        {"title": "If the policy were older", "caption": "Shows how the answer changes once waiting periods are satisfied.", "query": f"{original_query}. Assume the policy has been active for {max(recommended_wait + 2, 12)} months."},
-        {"title": "If the policy were brand new", "caption": "Stress-tests early-tenure claims where waiting periods matter most.", "query": f"{original_query}. Assume the policy is only 1 month old."},
-        {"title": "If the patient were older", "caption": "Checks whether age limits can break the same claim pattern.", "query": f"{original_query}. Assume the patient is {max(age_limit + 5, 70)} years old."},
-    ]
-    results = []
-    seen = {normalize_whitespace(original_query)}
-    for scenario in scenarios:
-        query = normalize_whitespace(scenario["query"])
-        if query in seen:
-            continue
-        seen.add(query)
-        scenario["query"] = query
-        results.append(scenario)
-    return results
 
 
 class ClaimDecisionEngine:
@@ -1150,22 +1070,3 @@ class ClaimDecisionEngine:
             }
         )
         return processed_response
-
-
-BatchProcessor = ClaimDecisionEngine
-
-
-def run_scenario_lab(engine: ClaimDecisionEngine, base_query: str, base_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-    scenario_results = []
-    for scenario in build_counterfactual_queries(
-        base_query,
-        base_result.get("parsed_query", {}),
-        engine.rule_engine.get_applicable_rules(),
-    ):
-        try:
-            result = engine.process_single_query(scenario["query"])
-        except Exception as exc:
-            result = {"decision": "ERROR", "amount": 0, "justification": str(exc)}
-        result["amount_display"] = format_currency(result.get("amount", 0))
-        scenario_results.append({"title": scenario["title"], "caption": scenario["caption"], "result": result})
-    return scenario_results

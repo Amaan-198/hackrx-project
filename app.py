@@ -6,23 +6,15 @@ from dotenv import load_dotenv
 
 import showcase_ui as ui
 from decision_core import (
-    BatchProcessor,
     ClaimDecisionEngine,
     ConfidenceCalculator,
     InsuranceRuleEngine,
-    MODEL_NAME,
     QueryParser,
-    build_action_plan,
-    build_claim_query,
     build_policy_radar,
-    clean_json_response,
     create_enhanced_qa_chain,
     create_enhanced_vector_store,
     create_query_parser_llm,
-    extract_source_evidence,
     format_currency,
-    initialize_embedding_model,
-    process_enhanced_response,
 )
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
@@ -142,6 +134,8 @@ def main():
             "claim_query": "",
         }
     )
+
+    ui.render_user_bar()
 
     uploaded_file = ui.render_sidebar()
     if uploaded_file:

@@ -20,6 +20,25 @@ def reset_analysis_state() -> None:
     st.session_state.latest_result = None
 
 
+def render_user_bar() -> None:
+    col_left, col_right = st.columns([4, 1])
+    with col_right:
+        st.markdown(
+            '<div style="display:flex;align-items:center;justify-content:flex-end;gap:0.6rem;margin:0.4rem 0;">'
+            '<span style="font-size:0.78rem;color:#7b898f;">demo@decision.local</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Sign out", key="logout_btn", use_container_width=False):
+            st.markdown(
+                '<meta http-equiv="refresh" content="0; url=http://localhost:8502">',
+                unsafe_allow_html=True,
+            )
+            st.stop()
+    with col_left:
+        st.caption("")
+
+
 def render_hero(has_document: bool) -> None:
     subtitle = (
         "Upload one policy, paste one claim query, and get a strict accept-or-reject answer."
@@ -168,7 +187,6 @@ def render_response_result(result: Dict[str, Any], format_currency) -> None:
     decision_label = "ACCEPT" if decision == "APPROVED" else "REJECT"
     amount = format_currency(result.get("amount", 0))
     pages = ", ".join(str(page) for page in result.get("source_pages", [])) or "No pages cited"
-    confidence = result.get("final_confidence", result.get("confidence", 0.0))
     reasoning_items = result.get("reasoning_steps", [])[:3]
     evidence_items = [f"Page {item['page']}: {item['snippet']}" for item in result.get("source_evidence", [])[:3]]
     rule_items = result.get("rule_violations", []) or result.get("rule_validation", {}).get("applicable_rules", [])
@@ -189,7 +207,7 @@ def render_response_result(result: Dict[str, Any], format_currency) -> None:
         </div>
     </div>
     <p class="answer-copy">{escape(result.get('justification', 'No justification provided'))}</p>
-    <div class="answer-meta">Confidence {confidence:.0%} <span class="meta-divider">|</span> Pages {escape(pages)}</div>
+    <div class="answer-meta">Pages {escape(pages)}</div>
     <div class="answer-grid">
         <div class="answer-section">
             <div class="answer-section-title">Why</div>
